@@ -1,0 +1,20 @@
+# Development settings only. Hermes installs the tirith/ subdirectory and never reads this file.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "realtirith: needs a real tirith binary (TIRITH_TEST_BIN and/or TIRITH_OLD_BIN)",
+    "hermes: needs an installed hermes-agent (hermes_cli importable)",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tirith"]
+known-local-folder = ["conftest", "fake_tirith"]
