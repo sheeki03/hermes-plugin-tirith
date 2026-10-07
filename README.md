@@ -5,8 +5,7 @@
 terminal command, the plugin runs your installed `tirith check` on it and sends any finding to Hermes's
 normal approval prompt. Critical findings are refused.
 
-**Status: 0.1.0, not released yet.** It needs tirith 0.5.0, which is still in progress
-([sheeki03/tirith#272](https://github.com/sheeki03/tirith/issues/272)).
+**Status: 0.1.0, not released yet.** It needs tirith 0.5.0, which is not released yet.
 
 The plugin itself is in [`tirith/`](tirith/); its [README](tirith/README.md) covers what it does,
 settings, unattended runs, limits and the network and data disclosure. Short version:

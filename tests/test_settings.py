@@ -6,6 +6,8 @@ import os
 import pytest
 
 from tirith import _settings
+from tirith._decide import filter_findings
+from tirith._scan import Finding
 from tirith._settings import DEFAULTS, GUARDED_RULES, Settings, parse
 
 
@@ -103,6 +105,33 @@ def test_guarded_rules_cannot_be_ignored(rule):
 def test_guard_covers_the_audited_rules():
     for rule in ("analysis_incomplete", "obfuscated_payload", "base64_decode_execute", "metadata_endpoint"):
         assert rule in GUARDED_RULES
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        # warn-level hidden-text, encoding, exfiltration and threat-intel rules (review of 0.1.0)
+        "invisible_whitespace",
+        "invisible_math_operator",
+        "variation_selector",
+        "hangul_filler",
+        "confusable_text",
+        "double_encoding",
+        "env_printenv_to_network_sink",
+        "suspicious_code_exfiltration",
+        "threat_safe_browsing",
+        "threat_threat_fox_ioc",
+    ],
+)
+def test_warn_level_obfuscation_and_exfil_rules_are_guarded(rule):
+    assert rule in GUARDED_RULES
+    settings, warnings = parse({"ignore_rules": [rule], "warn_action": "approve"})
+    assert settings.ignore_rules == frozenset()
+    assert any("cannot include " + rule in w for w in warnings)
+    finding = Finding(rule, "MEDIUM", rule)
+    assert filter_findings([finding], settings) == (finding,)
+    ignore_all = Settings(ignore_rules=frozenset({rule}), warn_action="approve")  # even if set directly
+    assert filter_findings([finding], ignore_all) == (finding,)
 
 
 def test_ignore_rules_bad_types():

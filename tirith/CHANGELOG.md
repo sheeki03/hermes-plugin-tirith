@@ -10,6 +10,8 @@ First release.
 - Background terminal input is checked as the terminal will run it: text typed over several calls, or a
   command continued over several lines, is checked as a whole, and input with control keys (Tab, Esc,
   Ctrl keys, NUL), which a terminal can treat as editing keys, fails closed.
+- `ignore_rules` cannot silence obfuscation, hidden-text, unanalysable-input, known-malicious,
+  exfiltration or terminal-injection rules, nor any CRITICAL finding.
 - tirith blocks go to Hermes's approval prompt; CRITICAL findings are refused; warnings run and are
   appended to the command result. All three are settings.
 - Fails closed: when tirith is missing, older than 0.5.0, times out or returns no verdict, Hermes asks for

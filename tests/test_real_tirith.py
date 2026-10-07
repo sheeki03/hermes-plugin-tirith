@@ -189,3 +189,17 @@ def test_background_input_with_editing_keys_fails_closed(ctx_factory, data):
     _ctx, registered = ctx_factory(path=NEW, offline=True, timeout=20)
     directive = _process_call(registered, "s1", "submit", data)
     assert directive is not None and directive["rule_key"].startswith("tirith:error:control_keys:")
+
+
+@need_new
+@pytest.mark.parametrize(
+    "command,rule",
+    [
+        ("echo\u2009hello", "invisible_whitespace"),
+        ("curl https://example.com/%252Fetc%252Fpasswd", "double_encoding"),
+    ],
+)
+def test_ignore_rules_cannot_hide_guarded_warnings(ctx_factory, command, rule):
+    ignored = ["invisible_whitespace", "double_encoding"]
+    directive = hook(ctx_factory, NEW, warn_action="approve", ignore_rules=ignored)(command)
+    assert directive is not None and directive["action"] == "approve" and rule in directive["message"]

@@ -84,7 +84,7 @@ settings. They are read on every command, so changes apply at once.
 | `warn_action` | `allow` | tirith warns: `allow` runs it, `approve` asks you, `block` refuses. |
 | `warn_context` | `true` | With `warn_action: allow`, add tirith's warning to the command result. |
 | `min_severity` | `LOW` | Warnings below this severity (`INFO`, `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`) are ignored. Never applies to blocks. |
-| `ignore_rules` | `[]` | Rule ids whose warnings are ignored. Never applies to blocks. Obfuscation, unanalysable input, known-malicious, exfiltration and terminal-injection rules, and every CRITICAL finding, cannot be ignored. |
+| `ignore_rules` | `[]` | Rule ids whose warnings are ignored. Never applies to blocks. Obfuscation, hidden-text, unanalysable-input, known-malicious, exfiltration and terminal-injection rules (the list is `GUARDED_RULES` in `_settings.py`), and every CRITICAL finding, cannot be ignored. |
 | `scan_process_input` | `true` | Also check input sent to background terminals (`process_manage` write/submit). |
 
 Filters never relax a block. To stop tirith from blocking something, use tirith's own policy

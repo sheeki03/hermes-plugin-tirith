@@ -64,7 +64,7 @@ config_schema:
   ignore_rules:
     type: list
     default: []
-    description: "Rule ids whose warnings are ignored. Never applies to blocks; obfuscation, unanalysable and known-malicious rules cannot be ignored."
+    description: "Rule ids whose warnings are ignored. Never applies to blocks; obfuscation, hidden-text, unanalysable-input, known-malicious, exfiltration and terminal-injection rules cannot be ignored."
   scan_process_input:
     type: bool
     default: true

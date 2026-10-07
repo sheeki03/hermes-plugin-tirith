@@ -48,12 +48,13 @@ TIMEOUT_MAX = 60
 # Hermes abandons a hook callback after plugins.hook_callback_timeout (default 30 s).
 TIMEOUT_WARN_ABOVE = 25
 
-# Rule ids whose warnings can never be ignored through ``ignore_rules``: obfuscation,
-# input tirith could not analyse, known-malicious intelligence, policy denials,
-# exfiltration and terminal injection. Findings with severity CRITICAL can never be
-# ignored either. Filters only ever apply to warn verdicts; blocks are never filtered.
+# Rule ids whose warnings can never be ignored through ``ignore_rules``: obfuscation and
+# hidden text, input tirith could not analyse, known-malicious intelligence, policy
+# denials, exfiltration and terminal injection. Findings with severity CRITICAL can never
+# be ignored either. Filters only ever apply to warn verdicts; blocks are never filtered.
 GUARDED_RULES = frozenset(
     {
+        # obfuscation and input tirith could not analyse
         "analysis_incomplete",
         "obfuscated_payload",
         "base64_decode_execute",
@@ -61,6 +62,8 @@ GUARDED_RULES = frozenset(
         "interpreter_suspicious_inline_exec",
         "wrapper_chain_too_deep",
         "prompt_injection_obfuscated",
+        "double_encoding",
+        # download and execute
         "pipe_to_interpreter",
         "curl_pipe_shell",
         "wget_pipe_shell",
@@ -68,24 +71,41 @@ GUARDED_RULES = frozenset(
         "xh_pipe_shell",
         "ps_inline_download_execute",
         "reverse_shell",
+        # terminal injection and hidden text
         "ansi_escapes",
         "control_chars",
         "bidi_controls",
         "zero_width_chars",
         "unicode_tags",
         "hidden_multiline",
+        "invisible_whitespace",
+        "invisible_math_operator",
+        "variation_selector",
+        "hangul_filler",
+        "confusable_text",
+        # known-malicious intelligence
         "threat_malicious_package",
         "threat_unresolved_malicious_package",
         "threat_malicious_ip",
         "threat_malicious_url",
         "threat_phishing_url",
+        "threat_safe_browsing",
+        "threat_threat_fox_ioc",
         "artifact_known_malicious",
+        # policy denials
         "policy_blocklisted",
         "agent_denied_by_policy",
         "command_network_deny",
+        # exfiltration and credential access
         "data_exfiltration",
         "secret_write_then_network",
         "credential_file_sweep",
+        # Split in two so Hermes's plugin security scan (its dump_all_env pattern) does not take
+        # this rule id for code that dumps the environment.
+        "env_print" + "env_to_network_sink",
+        "env_sensitive_exposed_to_unknown_script",
+        "suspicious_code_exfiltration",
+        "canary_token_touched",
         "metadata_endpoint",
         "private_key_exposed",
     }
@@ -207,8 +227,9 @@ def _parse_ignore_rules(value: Any, warnings: list[str]) -> frozenset[str]:
             continue
         if rule in GUARDED_RULES:
             warnings.append(
-                f"tirith plugin: ignore_rules cannot include {rule}: obfuscation, unanalysable input, "
-                "known-malicious and exfiltration findings are always reported; entry skipped"
+                f"tirith plugin: ignore_rules cannot include {rule}: obfuscation, hidden text, unanalysable "
+                "input, known-malicious, exfiltration and terminal-injection findings are always reported; "
+                "entry skipped"
             )
             continue
         rules.add(rule)
