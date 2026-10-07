@@ -1,0 +1,190 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tirith_ref:
+        description: >-
+          sheeki03/tirith commit (40-hex SHA) to build and run the real-tirith tests against.
+          Empty: only the fake-tirith tests run.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Hermes revision the loader tests and the catalog validation run against. Bump by hand in a reviewed commit.
+  HERMES_REF: 0e37a439bda15ef3c28a4d20593964d7c6a527a6
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: python -m pip install ruff==0.16.10 pyyaml==6.0.3
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: python -m compileall -q tirith tests
+      - name: plugin.yaml parses
+        run: python -c "import yaml; yaml.safe_load(open('tirith/plugin.yaml', encoding='utf-8'))"
+
+  unit:
+    name: unit (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install pytest==9.1.1 pyyaml==6.0.3
+      - name: Fake-tirith tests
+        run: python -m pytest -m "not realtirith and not hermes"
+
+  hermes:
+    name: hermes loader (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ env.HERMES_REF }}
+          path: hermes-agent
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - run: python -m pip install -e ./hermes-agent pytest==9.1.1 pyyaml==6.0.3
+      - name: Loader, approval gate, validate and doctor tests
+        run: python -m pytest -m hermes
+      - name: hermes plugins validate --install-deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/validate-home" HERMES_HOME="$RUNNER_TEMP/validate-home/.hermes"
+          mkdir -p "$HERMES_HOME"
+          hermes plugins validate --install-deps tirith
+
+  catalog-validate:
+    # The same gate the Hermes plugin catalog CI runs for an entry.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: NousResearch/hermes-agent/.github/actions/plugin-validate@0e37a439bda15ef3c28a4d20593964d7c6a527a6
+        with:
+          path: tirith
+          hermes-ref: 0e37a439bda15ef3c28a4d20593964d7c6a527a6
+
+  real-tirith:
+    # Runs only when a tirith is provided: workflow_dispatch with tirith_ref builds that commit as the
+    # candidate. The released 0.4.2 (checksums pinned below) is downloaded as the binary the gate must refuse.
+    if: github.event_name == 'workflow_dispatch' && inputs.tirith_ref != ''
+    name: real tirith (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            old_asset: tirith-x86_64-unknown-linux-gnu.tar.gz
+            old_sha256: efa6bf414a83dba385d4f13137e8677f850ced9102fe74ebb14c72f31df0dc77
+          - os: macos-latest
+            old_asset: tirith-aarch64-apple-darwin.tar.gz
+            old_sha256: 551f9a6ebf58344e7d0aa06bcc78d7a4f2f7b44b8011be563e0a91976cc9c4df
+    steps:
+      - name: Check tirith_ref is a commit SHA
+        env:
+          TIRITH_REF: ${{ inputs.tirith_ref }}
+        shell: bash
+        run: '[[ "$TIRITH_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "tirith_ref must be a 40-hex commit SHA"; exit 1; }'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: sheeki03/tirith
+          ref: ${{ inputs.tirith_ref }}
+          path: tirith-src
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: tirith-src
+      - name: Build the candidate tirith
+        working-directory: tirith-src
+        run: cargo build --release --locked -p tirith
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: python -m pip install pytest==9.1.1 pyyaml==6.0.3
+      - name: Download tirith 0.4.2 (sha256 pinned)
+        env:
+          ASSET: ${{ matrix.old_asset }}
+          SHA256: ${{ matrix.old_sha256 }}
+        run: |
+          python - <<'PY'
+          import hashlib, os, tarfile, urllib.request
+          asset, expected = os.environ["ASSET"], os.environ["SHA256"]
+          url = f"https://github.com/sheeki03/tirith/releases/download/v0.4.2/{asset}"
+          data = urllib.request.urlopen(url, timeout=120).read()
+          digest = hashlib.sha256(data).hexdigest()
+          assert digest == expected, f"sha256 mismatch for {asset}: {digest}"
+          dest = os.path.join(os.environ["RUNNER_TEMP"], "tirith-0.4.2")
+          os.makedirs(dest, exist_ok=True)
+          path = os.path.join(dest, asset)
+          with open(path, "wb") as handle:
+              handle.write(data)
+          with tarfile.open(path) as archive:
+              archive.extractall(dest, filter="data")
+          binary = next(os.path.join(root, name) for root, _dirs, files in os.walk(dest) for name in files if name == "tirith")
+          os.chmod(binary, 0o755)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"TIRITH_OLD_BIN={binary}\n")
+          PY
+      - name: Real-tirith and corpus tests
+        env:
+          TIRITH_TEST_BIN: ${{ github.workspace }}/tirith-src/target/release/tirith
+          TIRITH_CORPUS_REPORT: ${{ runner.temp }}/corpus-report.md
+        run: python -m pytest -m realtirith
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: corpus-report-${{ matrix.os }}
+          path: ${{ runner.temp }}/corpus-report.md
+          if-no-files-found: ignore
