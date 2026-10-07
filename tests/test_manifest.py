@@ -61,6 +61,7 @@ def test_installed_tree_has_only_runtime_files():
     allowed = {
         "__init__.py",
         "_decide.py",
+        "_input.py",
         "_locate.py",
         "_scan.py",
         "_settings.py",

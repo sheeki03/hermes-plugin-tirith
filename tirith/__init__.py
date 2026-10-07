@@ -15,7 +15,7 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
-from . import _decide, _locate, _scan, _settings, _state
+from . import _decide, _input, _locate, _scan, _settings, _state
 from ._version import PLUGIN_VERSION
 
 __version__ = PLUGIN_VERSION
@@ -28,8 +28,9 @@ WATCHED_TOOLS = TERMINAL_TOOLS | PROCESS_TOOLS
 
 _LOCATOR = _locate.Locator()
 _CWD_BY_TASK = _state.BoundedStore()  # task id -> cwd reported by the last terminal result
-_SCANNED = _state.BoundedStore()  # tool_call_id -> command text that tirith checked
+_SCANNED = _state.BoundedStore()  # tool_call_id -> command (terminal) or data (process) that was checked
 _WARN_CONTEXT = _state.BoundedStore()  # tool_call_id -> warning text to append to the result
+_PROCESS_INPUT = _input.ProcessInput()  # background process -> input typed but not run yet
 _FAIL_OPEN_LIMIT = _state.RateLimiter(60.0)
 _TIMEOUT_LIMIT = _state.RateLimiter(60.0)
 
@@ -45,30 +46,18 @@ def _reset_for_tests() -> None:
     _CWD_BY_TASK.clear()
     _SCANNED.clear()
     _WARN_CONTEXT.clear()
+    _PROCESS_INPUT.clear()
     _FAIL_OPEN_LIMIT.clear()
     _TIMEOUT_LIMIT.clear()
     _settings._reset_warnings_for_tests()
 
 
-def _has_text(value: str) -> bool:
-    return any(not (ch.isspace() or ord(ch) < 32 or ord(ch) == 127) for ch in value)
-
-
-def command_to_check(tool_name: str, args: Any, settings: _settings.Settings) -> str | None:
-    """The shell input this tool call would run, or ``None`` when there is nothing to check."""
+def terminal_command(args: Any) -> str | None:
+    """The command a ``terminal`` call runs, or ``None`` when there is nothing to check."""
     if not isinstance(args, Mapping):
         return None
-    if tool_name in TERMINAL_TOOLS:
-        command = args.get("command")
-        return command if isinstance(command, str) and command.strip() else None
-    if tool_name in PROCESS_TOOLS and settings.scan_process_input:
-        action = args.get("action")
-        data = args.get("data")
-        if not isinstance(data, str) or not _has_text(data):
-            return None
-        if action == "submit" or (action == "write" and ("\n" in data or "\r" in data)):
-            return data
-    return None
+    command = args.get("command")
+    return command if isinstance(command, str) and command.strip() else None
 
 
 def _double_scan_check() -> None:
@@ -153,6 +142,36 @@ def check_command(
     return decision, outcome, cwd
 
 
+def check_process_input(
+    plan: _input.Plan,
+    settings: _settings.Settings,
+    *,
+    args: Mapping[str, Any],
+    task_id: str,
+    session_id: str,
+) -> tuple[_decide.Decision, _scan.ScanOutcome, str]:
+    """Check what a ``process_manage`` write/submit completes (``plan.scan``), or fail closed."""
+    if plan.scan is not None and plan.error is None:
+        decision, outcome, _cwd = check_command(plan.scan, settings, args=args, task_id=task_id, session_id=session_id)
+        return decision, outcome, plan.scan
+    if plan.error is None:
+        return _decide.Decision("none", "allow"), _scan.ScanOutcome(kind="allow"), plan.text  # nothing runs yet
+    outcome = _scan.error_outcome(*plan.error)
+    cwd = _scan.resolve_cwd(args, _CWD_BY_TASK.get(task_id))
+    decision = _decide.decide(outcome, settings, command=plan.text, cwd=cwd, session_id=session_id, task_id=task_id)
+    return decision, outcome, plan.text
+
+
+def _track_process_input(plan: _input.Plan, tool_call_id: str, directive: dict | None) -> None:
+    """Count the call's keys as typed unless it is refused outright; its result confirms them."""
+    if directive is not None and directive.get("action") == "block":
+        return
+    if tool_call_id:
+        _PROCESS_INPUT.started(tool_call_id, plan.process, plan.keys)
+    else:
+        _PROCESS_INPUT.record(plan.process, plan.keys, confirmed=directive is None)
+
+
 def _internal_error(command: str, settings: _settings.Settings, task_id: str, session_id: str) -> dict | None:
     outcome = _scan.error_outcome("internal", "the tirith plugin hit an internal error")
     decision = _decide.decide(outcome, settings, command=command, cwd="", session_id=session_id, task_id=task_id)
@@ -173,28 +192,56 @@ def _on_pre_tool_call(
         return None
     settings = _settings.Settings()  # defaults (fail closed) until the user's settings are read
     command = ""
+    plan: _input.Plan | None = None
+    call_id = tool_call_id if isinstance(tool_call_id, str) else ""
     try:
-        found = command_to_check(tool_name, args, settings)
+        if tool_name in TERMINAL_TOOLS:
+            found = terminal_command(args)
+            checked = found
+        else:
+            found = _input.keystrokes(args)
+            checked = args.get("data") if found is not None else None
         if found is None:
             return None
         command = found
+        if tool_name in PROCESS_TOOLS:
+            process = _input.canonical_id(args.get("session_id"))
+            if not process:
+                return None  # Hermes refuses a write without a process id
+            plan = _input.Plan(process, found, found)  # tracked even if a later step fails
         settings = _settings.load(ctx.get_config)
-        if command_to_check(tool_name, args, settings) is None:
-            return None  # scan_process_input is off
+        if plan is not None:
+            if not settings.scan_process_input:
+                return None
+            plan = _PROCESS_INPUT.plan(plan.process, found) or plan
+            command = plan.text
         _double_scan_check()
         task_id = task_id if isinstance(task_id, str) else ""
         session_id = session_id if isinstance(session_id, str) else ""
-        decision, outcome, _cwd = check_command(command, settings, args=args, task_id=task_id, session_id=session_id)
-        if isinstance(tool_call_id, str) and tool_call_id:
-            _SCANNED.set(tool_call_id, command)
+        if plan is None:
+            decision, outcome, _cwd = check_command(
+                command, settings, args=args, task_id=task_id, session_id=session_id
+            )
+        else:
+            decision, outcome, command = check_process_input(
+                plan, settings, args=args, task_id=task_id, session_id=session_id
+            )
+        if call_id:
+            _SCANNED.set(call_id, checked)
             if decision.context:
-                _WARN_CONTEXT.set(tool_call_id, decision.context)
+                _WARN_CONTEXT.set(call_id, decision.context)
         _log_decision(decision, outcome, command)
-        return decision.directive()
+        directive = decision.directive()
+        if plan is not None:
+            _track_process_input(plan, call_id, directive)
+        return directive
     except Exception:
         logger.exception("tirith plugin: internal error while checking a %s call", tool_name)
         try:
-            return _internal_error(command, settings, str(task_id or ""), str(session_id or ""))
+            directive = _internal_error(command, settings, str(task_id or ""), str(session_id or ""))
+            if plan is not None:
+                _track_process_input(plan, call_id, directive)
+            return directive
         except Exception:
             return {"action": "block", "message": "BLOCKED: the tirith plugin failed while checking this command."}
 
@@ -210,6 +257,15 @@ def _result_cwd(result: Any) -> str | None:
     return cwd if isinstance(cwd, str) and cwd else None
 
 
+def _process_result(args: Any, result: Any, call_id: str, status: Any) -> None:
+    if call_id:
+        keys = _input.keystrokes(args)
+        process = _input.canonical_id(args.get("session_id")) if keys is not None else ""
+        _PROCESS_INPUT.finished(call_id, _input.was_written(result, status), process, keys)
+    for process in _input.finished_processes(args, result):
+        _PROCESS_INPUT.forget(process)
+
+
 def _on_post_tool_call(
     *,
     tool_name: str = "",
@@ -217,12 +273,16 @@ def _on_post_tool_call(
     result: Any = None,
     task_id: str = "",
     tool_call_id: str = "",
+    status: Any = None,
     **_kwargs: Any,
 ) -> None:
     if tool_name not in WATCHED_TOOLS:
         return None
     try:
-        scanned = _SCANNED.pop(tool_call_id) if isinstance(tool_call_id, str) and tool_call_id else None
+        call_id = tool_call_id if isinstance(tool_call_id, str) else ""
+        scanned = _SCANNED.pop(call_id) if call_id else None
+        if tool_name in PROCESS_TOOLS:
+            _process_result(args, result, call_id, status)
         if not isinstance(args, Mapping):
             return None
         if scanned is not None:

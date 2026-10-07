@@ -39,8 +39,8 @@ injection. What it finds goes to Hermes's normal approval prompt; critical findi
 
 ## What happens to a command
 
-Before each `terminal` command (and each command line sent to a background terminal with
-`process_manage` submit, or a write that ends a line), the plugin runs
+Before each `terminal` command, and before each line the agent finishes in a background terminal
+(`process_manage` submit, or a write that ends the line), the plugin runs
 `tirith check --json --non-interactive --shell posix` with the command on standard input, in the
 command's working directory. Then:
 
@@ -52,6 +52,17 @@ command's working directory. Then:
 | block with a CRITICAL finding | Refused. Hermes cannot approve it; change your tirith policy if it is a false positive. |
 | the command asks tirith to skip the check (`TIRITH=0`) and your tirith policy allows that | Hermes asks you: a prefix the agent wrote is not your consent. |
 | no answer: tirith missing, older than 0.5.0, timed out, crashed, no verdict | Hermes asks you (fail closed). |
+
+**Background terminals.** `process_manage` sends keystrokes: `write` types text, `submit` types text
+and Enter. The plugin keeps what was typed into each background process and checks the whole line when
+a call ends it, so a line typed over several calls (even by another task) is checked as one. A shell
+command that goes on over several lines (a trailing `\`, `|`, `&&` or `||`, an open quote, a heredoc)
+is checked as a whole each time a line of it is sent. Typed text counts once Hermes reports that the
+call ran, so a refused line stays typed and is checked again when the line is ended again. Input with
+control keys (Tab, Esc, Ctrl-A and other Ctrl keys, a lone carriage return, NUL, DEL) counts as a
+failed check: a terminal can treat them as editing keys (completion, moving the cursor, recalling
+history) and run a different line than the text tirith would see. Ctrl-C or Ctrl-D on its own, with
+nothing typed, goes through.
 
 The agent never sees tirith's long descriptions or fix-it advice, only the finding titles and rule ids,
 so it cannot be steered by them. The command excerpt in the prompt shows control, bidi and zero-width
@@ -74,7 +85,7 @@ settings. They are read on every command, so changes apply at once.
 | `warn_context` | `true` | With `warn_action: allow`, add tirith's warning to the command result. |
 | `min_severity` | `LOW` | Warnings below this severity (`INFO`, `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`) are ignored. Never applies to blocks. |
 | `ignore_rules` | `[]` | Rule ids whose warnings are ignored. Never applies to blocks. Obfuscation, unanalysable input, known-malicious, exfiltration and terminal-injection rules, and every CRITICAL finding, cannot be ignored. |
-| `scan_process_input` | `true` | Also check command lines sent to background terminals. |
+| `scan_process_input` | `true` | Also check input sent to background terminals (`process_manage` write/submit). |
 
 Filters never relax a block. To stop tirith from blocking something, use tirith's own policy
 (`tirith explain --rule <rule_id>` shows what a rule does; `tirith policy` manages the policy), where your
@@ -116,12 +127,14 @@ or slow plugin let the command run.
 - Another plugin can change a command after tirith checked it (a `modify` directive). The plugin notices
   afterwards and logs a warning; it cannot check the changed command.
 - `execute_code` (Python) and file-writing tools are not checked; tirith checks shell commands.
+- The plugin checks the text of each line. A background shell can still run something else for it:
+  an alias, function or history entry set up earlier, or a script written with a file tool.
 - A Hermes approval cannot be limited to one session by a plugin, hence the salted keys above.
 
 ## Disclosure
 
-**What this plugin does on your machine.** Before every `terminal` command, and every command line the
-agent sends to a background terminal, the plugin runs the `tirith` program you installed
+**What this plugin does on your machine.** Before every `terminal` command, and every line the agent
+finishes in a background terminal, the plugin runs the `tirith` program you installed
 (`tirith check`), in the command's working directory, with the command on standard input. This adds
 roughly 0.1-0.5 s per command. It reads its own settings only, stores nothing outside memory, makes no
 network requests itself, sends no telemetry, and never downloads, installs or updates tirith or anything
