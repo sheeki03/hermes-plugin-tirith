@@ -594,6 +594,26 @@ def test_cwd_follows_terminal_results(hooks, fake, tmp_path):
     assert not os.path.samefile(scans(fake)[-1]["cwd"], moved)
 
 
+def test_tracked_cwd_does_not_expire(hooks, fake, tmp_path, monkeypatch):
+    # Hermes reports the cwd only when a command changes it and keeps it for the whole session
+    _ctx, registered = hooks
+    now = [1000.0]
+    monkeypatch.setattr(plugin._CWD_BY_TASK, "_clock", lambda: now[0])
+    moved = tmp_path / "moved"
+    moved.mkdir()
+    pre(registered, "cd moved", call_id="c1")
+    registered["post_tool_call"](
+        tool_name="terminal",
+        args={"command": "cd moved"},
+        result=json.dumps({"output": "", "cwd": str(moved)}),
+        task_id="task-1",
+        tool_call_id="c1",
+    )
+    now[0] += 24 * 3600.0  # a day of commands that did not change directory
+    pre(registered, "ls", call_id="c2")
+    assert os.path.samefile(scans(fake)[-1]["cwd"], moved)
+
+
 def test_workdir_wins_and_is_not_recorded(hooks, fake, tmp_path):
     _ctx, registered = hooks
     work = tmp_path / "work"

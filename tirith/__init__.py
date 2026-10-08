@@ -11,6 +11,7 @@ import hashlib
 import importlib.util
 import json
 import logging
+import math
 import sys
 from collections.abc import Mapping
 from typing import Any
@@ -27,7 +28,9 @@ PROCESS_TOOLS = frozenset({"process_manage", "process"})
 WATCHED_TOOLS = TERMINAL_TOOLS | PROCESS_TOOLS
 
 _LOCATOR = _locate.Locator()
-_CWD_BY_TASK = _state.BoundedStore()  # task id -> cwd reported by the last terminal result
+# task id -> cwd reported by the last terminal result. No age limit: Hermes reports the cwd only when a
+# command changes it and keeps its own record for the whole session, so this must not expire either.
+_CWD_BY_TASK = _state.BoundedStore(ttl=math.inf)
 _SCANNED = _state.BoundedStore()  # tool_call_id -> command (terminal) or data (process) that was checked
 _WARN_CONTEXT = _state.BoundedStore()  # tool_call_id -> warning text to append to the result
 _PROCESS_INPUT = _input.ProcessInput()  # background process -> input typed but not run yet

@@ -123,9 +123,9 @@ or slow plugin let the command run.
 ## Limits
 
 - Hermes does not tell plugins which backend (local, Docker, SSH, ...) runs the command or its exact
-  directory. The plugin uses the call's `workdir`, else the directory reported by the last command, else
-  `TERMINAL_CWD`, else Hermes's own directory. For remote and container backends this is approximate, and
-  their commands are checked too.
+  directory. The plugin uses the call's `workdir`, else the directory the task's last `cd` moved to (as
+  reported in the command result), else `TERMINAL_CWD`, else Hermes's own directory. For remote and
+  container backends this is approximate, and their commands are checked too.
 - Another plugin can change a command after tirith checked it (a `modify` directive). The plugin notices
   afterwards and logs a warning; it cannot check the changed command.
 - `execute_code` (Python) and file-writing tools are not checked; tirith checks shell commands.

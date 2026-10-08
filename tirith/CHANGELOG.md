@@ -8,6 +8,8 @@ First release.
   finishes in a background terminal (`process_manage` write/submit), before they run. The command goes
   to tirith on standard input, in the command's working directory. A `close` (end of input, which makes
   a shell run a line typed without Enter) checks everything typed so far.
+- The working directory reported after a `cd` is kept for the whole session (Hermes reports it only when
+  it changes), so later commands are checked in the directory Hermes runs them in.
 - Background terminal input is checked as the terminal will run it: text typed over several calls, or a
   command continued over several lines, is checked as a whole, and input with control keys (Tab, Esc,
   Ctrl keys, NUL), which a terminal can treat as editing keys, fails closed.
