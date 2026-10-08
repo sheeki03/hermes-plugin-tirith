@@ -1,0 +1,71 @@
+name: tirith
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: >-
+  Check every terminal command with your installed tirith before it runs. Findings go to
+  Hermes's approval prompt; critical findings are blocked. The plugin never downloads tirith.
+author: tirith contributors
+license: MIT
+homepage: https://github.com/sheeki03/hermes-plugin-tirith
+tags: [security, terminal, approvals]
+requires_hermes: ">=0.21.5"
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - transform_tool_result
+external_dependencies:
+  - name: tirith
+    install: "brew install tirith  (0.5.0 or later; other installers: https://github.com/sheeki03/tirith#install)"
+    check: "tirith --version"
+# Defaults must equal _settings.DEFAULTS (tests/test_manifest.py checks this).
+config_schema:
+  path:
+    type: str
+    default: ""
+    label: tirith executable
+    description: "Empty: find tirith on PATH and in the usual install folders. Or an absolute path (~ expands)."
+  timeout:
+    type: int
+    default: 10
+    description: "Seconds per check (1-60). Keep it below plugins.hook_callback_timeout (30)."
+  offline:
+    type: bool
+    default: false
+    description: "Run checks with TIRITH_OFFLINE=1: no network from tirith during checks; package and URL intelligence from the local cache only."
+  fail_closed:
+    type: bool
+    default: true
+    description: "When tirith is missing, too old, times out or returns no verdict: ask for approval (blocked in unattended runs). Off: run the command unchecked and log a warning."
+  block_action:
+    type: str
+    default: approve
+    choices: [approve, block]
+    description: "tirith blocks a command: ask a person (approve) or refuse it (block)."
+  critical_action:
+    type: str
+    default: block
+    choices: [block, approve]
+    description: "A CRITICAL finding: refuse (block) or ask a person (approve)."
+  warn_action:
+    type: str
+    default: allow
+    choices: [allow, approve, block]
+    description: "tirith warns: run it and show the warning to the agent (allow), ask a person, or refuse."
+  warn_context:
+    type: bool
+    default: true
+    description: "With warn_action allow, append tirith's warning to the command result."
+  min_severity:
+    type: str
+    default: LOW
+    choices: [INFO, LOW, MEDIUM, HIGH, CRITICAL]
+    description: "Warnings below this severity are ignored. Never applies to blocks."
+  ignore_rules:
+    type: list
+    default: []
+    description: "Rule ids whose warnings are ignored. Never applies to blocks; obfuscation, hidden-text, unanalysable-input, known-malicious, exfiltration and terminal-injection rules cannot be ignored."
+  scan_process_input:
+    type: bool
+    default: true
+    description: "Also check input sent to background terminals (process_manage write/submit/close)."
