@@ -7,6 +7,7 @@ shim on Windows) that runs this file with a JSON config. Every invocation is app
 Modes:
   ``d1``  behaves like tirith 0.5.0 (PLAN Phase D.1): an unknown option before ``--`` is a
           usage error (exit 2, message on stderr, no stdout, stdin not read).
+          ``config["reject_response"]`` replaces that answer (to test odd rejections).
   ``old`` behaves like tirith 0.4.x: an unknown option is swallowed into the command,
           which is then analysed and allowed (exit 0 with an allow verdict).
 
@@ -163,7 +164,15 @@ def main(argv: list[str]) -> int:
         if arg.startswith("-") and cfg["mode"] == "d1":
             _record(cfg, args, b"")
             time.sleep(float(cfg.get("probe_sleep", 0)))
-            sys.stderr.write(f"error: unexpected argument '{arg}' found\n\nUsage: tirith check [OPTIONS] [CMD]...\n")
+            if cfg.get("reject_response") is not None:
+                return _respond(cfg["reject_response"])
+            # the shape tirith 0.5.0 prints (clap usage error)
+            sys.stderr.write(
+                f"error: unexpected argument '{arg}' found\n\n"
+                f"  tip: to pass '{arg}' as a value, use '-- {arg}'\n\n"
+                "Usage: tirith check --non-interactive --shell <SHELL> [CMD]...\n\n"
+                "For more information, try '--help'.\n"
+            )
             return 2
         positional.extend(rest[i:])  # old tirith: trailing_var_arg swallows the rest
         break

@@ -6,8 +6,10 @@ already on the machine.
 Gate: tirith releases before 0.5.0 treat an unknown option before ``--`` as part of the
 command to analyse, so a check request can be misread and an attack missed. The gate
 sends ``check`` an option no tirith knows (``PROBE_FLAG``) with ``true`` on stdin. A
-tirith with the 0.5.0 contract rejects the option (non-zero exit, no verdict). An older
-one analyses the text and prints a verdict: refused as too old.
+tirith with the 0.5.0 contract rejects the option with a usage error: exit code 2, no
+verdict, and stderr naming the option (``error: unexpected argument '<option>' found``).
+An older one analyses the text and prints a verdict: refused as too old. Any other answer
+(a crash, another exit code, an error about something else) is not trusted either.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from . import _scan
 MIN_TIRITH = (0, 5, 0)
 MIN_TIRITH_TEXT = "0.5.0"
 PROBE_FLAG = "--hermes-plugin-capability-probe"
+USAGE_ERROR_RC = 2  # clap's exit code for a usage error
 NEGATIVE_TTL = 60.0
 VERSION_TIMEOUT = 5.0
 PROBE_TIMEOUT = 10.0  # first call: --version + probe + scan must fit Hermes's 30 s hook budget
@@ -173,6 +176,17 @@ def gate(path: str, env: Mapping[str, str], timeout: float, runner: Runner | Non
             reason=(
                 f"tirith {shown} at {path} is older than {MIN_TIRITH_TEXT}; older releases can mis-read a "
                 "check request and miss attacks. Upgrade tirith (for example: brew upgrade tirith)"
+            ),
+        )
+    rejected = probe.rc == USAGE_ERROR_RC and PROBE_FLAG in probe.stderr.decode("utf-8", errors="replace")
+    if not rejected:
+        return GateResult(
+            "error",
+            path=path,
+            version=version,
+            reason=(
+                f"tirith at {path} gave an unexpected answer to the plugin's capability check "
+                f"(exit code {probe.rc}, expected a usage error for {PROBE_FLAG})"
             ),
         )
     note = ""

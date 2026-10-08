@@ -120,6 +120,24 @@ def test_probe_that_exits_zero_is_refused(tmp_path, env):
     assert gate(fake, env, 5).status == "too_old"
 
 
+@pytest.mark.parametrize(
+    "reject",
+    [
+        {"rc": 1, "stderr": ""},  # a crash or a policy failure, not a usage error
+        {"rc": 101, "stderr": "thread 'main' panicked\n"},
+        {"rc": 2, "stderr": "error: invalid value 'posix' for '--shell <SHELL>'\n"},  # some other usage error
+        {"rc": 2, "stderr": ""},
+    ],
+)
+def test_probe_rejection_must_be_a_usage_error_for_the_probe(tmp_path, env, reject):
+    fake = make_fake(str(tmp_path / "odd"), {"reject_response": reject})
+    locator = Locator()
+    result = locator.check(fake, env, 5)
+    assert result.status == "error" and "unexpected answer" in result.reason and PROBE_FLAG in result.reason
+    locator.check(fake, env, 5)
+    assert len(calls(fake)) == 4  # an unexpected answer is not cached
+
+
 def test_probe_timeout_is_an_error_and_not_cached(tmp_path, env):
     fake = make_fake(str(tmp_path / "slow"), {"probe_sleep": 30})
     locator = Locator()

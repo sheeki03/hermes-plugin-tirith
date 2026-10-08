@@ -10,8 +10,8 @@ import os
 
 import pytest
 
-from tirith._locate import Locator
-from tirith._scan import child_env
+from tirith._locate import PROBE_FLAG, Locator
+from tirith._scan import CHECK_ARGV, child_env, run
 from tirith._settings import Settings
 
 pytestmark = pytest.mark.realtirith
@@ -97,6 +97,13 @@ def test_old_tirith_with_fail_closed_off_runs_unchecked(ctx_factory):
 def test_gate_accepts_new_tirith():
     result = Locator().check(NEW, child_env(Settings(offline=True)), 30)
     assert result.ok, result
+
+
+@need_new
+def test_new_tirith_rejects_the_probe_with_a_usage_error():
+    probe = run([NEW, *CHECK_ARGV, PROBE_FLAG], b"true\n", os.getcwd(), child_env(Settings(offline=True)), 30)
+    assert probe.rc == 2 and probe.stdout == b"", probe
+    assert f"unexpected argument '{PROBE_FLAG}'" in probe.stderr.decode("utf-8", errors="replace")
 
 
 @need_new
