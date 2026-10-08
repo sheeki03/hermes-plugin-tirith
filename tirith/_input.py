@@ -3,8 +3,11 @@
 Hermes's ``process_manage`` tool sends keystrokes to a background process: ``write`` sends
 ``data`` as it is and ``submit`` sends ``data`` plus Enter. A line can therefore be typed in one
 call and run by a later one (``write`` the command, then ``submit("")``), and a shell command can
-go on over several lines (a trailing ``\\`` or ``|``, an open quote, a heredoc). This module keeps
-the unfinished input of every process and hands the plugin the whole text that a call completes.
+go on over several lines (a trailing ``\\`` or ``|``, an open quote, a heredoc). ``close`` sends
+end of input (Ctrl-D on a PTY, a closed pipe otherwise), and a shell runs a line it holds at end of
+input even without Enter (any shell on a pipe; dash on a PTY after a second Ctrl-D), so ``close``
+completes whatever was typed. This module keeps the unfinished input of every process and hands the
+plugin the whole text that a call completes.
 
 Input is recorded only once Hermes reports that the call ran (``post_tool_call``): a refused call
 never reaches the process, so its text must not replace what the process really holds. Calls that
@@ -25,7 +28,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-INPUT_ACTIONS = frozenset({"write", "submit"})
+INPUT_ACTIONS = frozenset({"write", "submit", "close"})
+EOF_ACTIONS = frozenset({"close"})  # end of input: the typed text runs as it is
 INTERRUPT_KEYS = frozenset("\x03\x04")  # Ctrl-C and Ctrl-D on their own
 MAX_INPUT_BYTES = 1024 * 1024  # the most tirith reads; more fails closed
 MAX_PROCESSES = 1024  # processes with unfinished input; more fails closed
@@ -36,10 +40,10 @@ _WORD_BREAKS = " \t\n;&|()<>"
 
 @dataclass(frozen=True)
 class Plan:
-    """What one ``write`` / ``submit`` means for the process it goes to."""
+    """What one ``write`` / ``submit`` / ``close`` means for the process it goes to."""
 
     process: str  # canonical process id
-    keys: str  # what Hermes writes for this call
+    keys: str  # what Hermes writes for this call ("" for ``close``)
     text: str  # unfinished input plus ``keys``: shown when the input cannot be checked
     scan: str | None = None  # complete lines to check now, or None when nothing can run yet
     error: tuple[str, str] | None = None  # (reason class, reason): fail closed
@@ -54,14 +58,21 @@ def canonical_id(raw: Any) -> str:
 
 
 def keystrokes(args: Any) -> str | None:
-    """What Hermes writes to the process for this call, or None for other actions."""
+    """What Hermes writes to the process for this call ("" for ``close``), or None for other actions."""
     if not isinstance(args, Mapping):
         return None
     action = args.get("action")
     if not isinstance(action, str) or action not in INPUT_ACTIONS:
         return None
+    if action in EOF_ACTIONS:
+        return ""  # Hermes sends end of input and ignores ``data``
     data = str(args.get("data", ""))  # Hermes: str(a.get("data", ""))
     return data + "\n" if action == "submit" else data
+
+
+def ends_input(args: Any) -> bool:
+    """Whether the call sends end of input (``close``), which runs whatever is typed."""
+    return isinstance(args, Mapping) and args.get("action") in EOF_ACTIONS
 
 
 def has_text(value: str) -> bool:
@@ -276,8 +287,12 @@ class ProcessInput:
 
     # -- API --
 
-    def plan(self, process: str, keys: str) -> Plan | None:
-        """What to check before ``keys`` go to ``process`` (None: Hermes will refuse the call)."""
+    def plan(self, process: str, keys: str, eof: bool = False) -> Plan | None:
+        """What to check before ``keys`` go to ``process`` (None: Hermes will refuse the call).
+
+        ``eof``: the call ends the input (``close``), so all typed text is checked as it is, finished
+        line or not. With nothing typed it goes through.
+        """
         if not process:
             return None
         with self._lock:
@@ -328,6 +343,8 @@ class ProcessInput:
                 error=("too_many", "too many background processes have unfinished input"),
             )
         normalised = text.replace("\r\n", "\n")
+        if eof:
+            return Plan(process, keys, text, scan=normalised if has_text(normalised) else None)
         end = normalised.rfind("\n")
         if end < 0:
             return Plan(process, keys, text)

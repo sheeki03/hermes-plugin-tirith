@@ -150,7 +150,7 @@ def check_process_input(
     task_id: str,
     session_id: str,
 ) -> tuple[_decide.Decision, _scan.ScanOutcome, str]:
-    """Check what a ``process_manage`` write/submit completes (``plan.scan``), or fail closed."""
+    """Check what a ``process_manage`` write/submit/close completes (``plan.scan``), or fail closed."""
     if plan.scan is not None and plan.error is None:
         decision, outcome, _cwd = check_command(plan.scan, settings, args=args, task_id=task_id, session_id=session_id)
         return decision, outcome, plan.scan
@@ -213,7 +213,7 @@ def _on_pre_tool_call(
         if plan is not None:
             if not settings.scan_process_input:
                 return None
-            plan = _PROCESS_INPUT.plan(plan.process, found) or plan
+            plan = _PROCESS_INPUT.plan(plan.process, found, eof=_input.ends_input(args)) or plan
             command = plan.text
         _double_scan_check()
         task_id = task_id if isinstance(task_id, str) else ""

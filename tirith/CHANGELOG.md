@@ -6,7 +6,8 @@ First release.
 
 - Runs your installed `tirith check` on every Hermes `terminal` command, and on every line the agent
   finishes in a background terminal (`process_manage` write/submit), before they run. The command goes
-  to tirith on standard input, in the command's working directory.
+  to tirith on standard input, in the command's working directory. A `close` (end of input, which makes
+  a shell run a line typed without Enter) checks everything typed so far.
 - Background terminal input is checked as the terminal will run it: text typed over several calls, or a
   command continued over several lines, is checked as a whole, and input with control keys (Tab, Esc,
   Ctrl keys, NUL), which a terminal can treat as editing keys, fails closed.

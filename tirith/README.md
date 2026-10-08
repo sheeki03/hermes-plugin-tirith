@@ -40,7 +40,7 @@ injection. What it finds goes to Hermes's normal approval prompt; critical findi
 ## What happens to a command
 
 Before each `terminal` command, and before each line the agent finishes in a background terminal
-(`process_manage` submit, or a write that ends the line), the plugin runs
+(`process_manage` submit, a write that ends the line, or a close), the plugin runs
 `tirith check --json --non-interactive --shell posix` with the command on standard input, in the
 command's working directory. Then:
 
@@ -62,7 +62,9 @@ call ran, so a refused line stays typed and is checked again when the line is en
 control keys (Tab, Esc, Ctrl-A and other Ctrl keys, a lone carriage return, NUL, DEL) counts as a
 failed check: a terminal can treat them as editing keys (completion, moving the cursor, recalling
 history) and run a different line than the text tirith would see. Ctrl-C or Ctrl-D on its own, with
-nothing typed, goes through.
+nothing typed, goes through. `close` sends end of input, and a shell runs the text it holds at end of
+input even without Enter, so a `close` checks everything typed so far as a whole command (with nothing
+typed it goes through).
 
 The agent never sees tirith's long descriptions or fix-it advice, only the finding titles and rule ids,
 so it cannot be steered by them. The command excerpt in the prompt shows control, bidi and zero-width
@@ -85,7 +87,7 @@ settings. They are read on every command, so changes apply at once.
 | `warn_context` | `true` | With `warn_action: allow`, add tirith's warning to the command result. |
 | `min_severity` | `LOW` | Warnings below this severity (`INFO`, `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`) are ignored. Never applies to blocks. |
 | `ignore_rules` | `[]` | Rule ids whose warnings are ignored. Never applies to blocks. Obfuscation, hidden-text, unanalysable-input, known-malicious, exfiltration and terminal-injection rules (the list is `GUARDED_RULES` in `_settings.py`), and every CRITICAL finding, cannot be ignored. |
-| `scan_process_input` | `true` | Also check input sent to background terminals (`process_manage` write/submit). |
+| `scan_process_input` | `true` | Also check input sent to background terminals (`process_manage` write/submit/close). |
 
 Filters never relax a block. To stop tirith from blocking something, use tirith's own policy
 (`tirith explain --rule <rule_id>` shows what a rule does; `tirith policy` manages the policy), where your
