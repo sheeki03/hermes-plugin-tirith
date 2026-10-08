@@ -157,7 +157,9 @@ def test_cwd_expands_user(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     (tmp_path / "p").mkdir()
-    assert resolve_cwd({"workdir": "~/p"}, None, {}) == str(tmp_path / "p")
+    resolved = resolve_cwd({"workdir": "~/p"}, None, {})
+    # Windows keeps the "/" from "~/p" after the expanded home: same directory, other spelling
+    assert os.path.isabs(resolved) and os.path.samefile(resolved, tmp_path / "p")
 
 
 # --- running the fake -----------------------------------------------------------------------
