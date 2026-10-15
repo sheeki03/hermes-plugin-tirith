@@ -22,6 +22,9 @@ environment, so tests can prove the plugin strips them.
 ``bypass_requested``/``bypass_honored`` true and ``requires_approval`` false), ``"silent"`` like
 older builds (exit 0, nothing on stdout).
 
+``FAKE_TIRITH_STARTUP_DELAY=<seconds>`` in the environment delays every invocation, to check that
+the tests hold up on a slow or heavily loaded machine.
+
 The gate's contract check (``CONTRACT_COMMAND`` on stdin) is answered with
 ``config["contract_response"]`` (default: an allow), not with the scan responses, so a test's
 scan answers do not decide whether the gate passes. ``config["drop_fields"]`` removes keys from
@@ -159,6 +162,7 @@ def _respond(response: dict[str, Any], drop: tuple[str, ...] = ()) -> int:
 
 
 def main(argv: list[str]) -> int:
+    time.sleep(float(os.environ.get("FAKE_TIRITH_STARTUP_DELAY") or 0))
     with open(argv[0], encoding="utf-8") as handle:
         cfg = json.load(handle)
     args = argv[1:]

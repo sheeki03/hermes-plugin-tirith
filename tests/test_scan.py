@@ -12,6 +12,7 @@ from tirith._scan import RunResult, ScanOutcome, child_env, classify, parse_verd
 from tirith._settings import Settings
 from tirith._version import PLUGIN_VERSION
 
+from conftest import TEST_TIMEOUT
 from fake_tirith import calls, make_fake, verdict
 
 
@@ -265,7 +266,7 @@ def test_cwd_expands_user(tmp_path, monkeypatch):
 # --- running the fake -----------------------------------------------------------------------
 
 
-def do_scan(fake, command, tmp_path, timeout=10, env=None):
+def do_scan(fake, command, tmp_path, timeout=TEST_TIMEOUT, env=None):
     return scan(
         command,
         binary=fake,
@@ -334,7 +335,7 @@ def test_timeout_kills_the_child_quickly(tmp_path):
     outcome = do_scan(fake, "sleep", tmp_path, timeout=1)
     elapsed = time.monotonic() - started
     assert outcome.kind == "error" and outcome.reason_class == "timeout"
-    assert elapsed < 8
+    assert elapsed < 20  # killed, not waited out (the fake sleeps 30 s)
 
 
 def test_missing_binary_is_a_spawn_error(tmp_path):

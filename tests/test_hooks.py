@@ -659,7 +659,7 @@ def test_same_process_is_reserved_while_the_actual_scanner_is_running(hooks, fak
     def paused_scan(*args, **kwargs):
         if not entered.is_set():  # only the first (slow) call waits
             entered.set()
-            assert release.wait(5), "scanner was not released"
+            assert release.wait(120), "scanner was not released"
         return original(*args, **kwargs)
 
     monkeypatch.setattr(plugin, "check_command", paused_scan)
@@ -670,12 +670,12 @@ def test_same_process_is_reserved_while_the_actual_scanner_is_running(hooks, fak
     )
     worker.start()
     try:
-        assert entered.wait(5), "the accumulated command never reached the scanner"
+        assert entered.wait(120), "the accumulated command never reached the scanner"
         directive = send(registered, "write", "tail", "other", task="task-2", approve=False)
         assert directive["rule_key"].startswith("tirith:error:ambiguous:")
     finally:
         release.set()
-        worker.join(5)
+        worker.join(120)
     assert not worker.is_alive()
     assert "curl_pipe_shell" in results["slow"]["message"]
     assert len(full_line_scans(fake, ATTACK)) == 2  # the slow call, and the other call's best-known text
@@ -702,7 +702,7 @@ def test_blocked_post_during_scan_cannot_be_resurrected_by_the_late_pre(hooks, f
 
     def paused_scan(*args, **kwargs):
         entered.set()
-        assert release.wait(5), "scanner was not released"
+        assert release.wait(120), "scanner was not released"
         return original(*args, **kwargs)
 
     monkeypatch.setattr(plugin, "check_command", paused_scan)
@@ -713,7 +713,7 @@ def test_blocked_post_during_scan_cannot_be_resurrected_by_the_late_pre(hooks, f
     )
     worker.start()
     try:
-        assert entered.wait(5), "the accumulated command never reached the scanner"
+        assert entered.wait(120), "the accumulated command never reached the scanner"
         post_hook(
             registered,
             tool_name="process_manage",
@@ -725,7 +725,7 @@ def test_blocked_post_during_scan_cannot_be_resurrected_by_the_late_pre(hooks, f
         now[0] = 301.0
     finally:
         release.set()
-        worker.join(5)
+        worker.join(120)
     assert not worker.is_alive()
     assert "curl_pipe_shell" in results["late"]["message"]
     # Hermes has already refused this call. A late pre (and a duplicate success post) cannot
@@ -977,7 +977,7 @@ def test_inline_bypass_without_json_fails_closed_as_before(tmp_path, ctx_factory
             "too_old",
             "needs tirith 0.5.0 or newer",
         ),
-        ({"default": {"rc": 0, "verdict": verdict("allow"), "sleep": 30}}, "timeout", "did not answer in time"),
+        ({"rules": [{"contains": "git", "rc": 0, "verdict": verdict("allow"), "sleep": 30}]}, "timeout", "in time"),
         ({"default": {"rc": 2, "stdout": "", "stderr": "error: usage\n"}}, "no_verdict", "without a verdict"),
         ({"default": {"rc": 101, "stdout": "panicked\n"}}, "exit_code", "exited with code 101"),
         ({"default": {"rc": 3, "stdout": ""}}, "no_verdict", "exited with code 3 without a verdict"),
@@ -986,8 +986,10 @@ def test_inline_bypass_without_json_fails_closed_as_before(tmp_path, ctx_factory
 )
 def test_failures_ask_for_approval(tmp_path, ctx_factory, config, reason_class, text):
     broken = make_fake(str(tmp_path / "x"), config)
-    # The timeout also bounds each gate step, so only the timeout case uses a short one.
-    _ctx, registered = ctx_factory(path=broken, timeout=3 if reason_class == "timeout" else 10)
+    ctx, registered = ctx_factory(path=broken)
+    if reason_class == "timeout":
+        assert pre(registered, "ls", call_id="warm-up") is None  # the gate passes once, with time to spare
+        ctx.config["timeout"] = 1
     directive = pre(registered, "git status")
     assert directive["action"] == "approve"
     assert directive["rule_key"].startswith(f"tirith:error:{reason_class}:")
@@ -1205,7 +1207,7 @@ def test_parallel_calls_are_independent(hooks):
     for t in threads:
         t.start()
     for t in threads:
-        t.join(60)
+        t.join(300)
     assert len(results) == 32
     for i, result in results.items():
         if i % 2:

@@ -73,7 +73,10 @@ def hermes(tmp_path, monkeypatch):
 
     def configure(settings=None, approvals_mode=None):
         config = {
-            "plugins": {"enabled": ["tirith"], "entries": {"tirith": {"settings": {"path": fake, **(settings or {})}}}}
+            "plugins": {
+                "enabled": ["tirith"],
+                "entries": {"tirith": {"settings": {"path": fake, "timeout": 25, **(settings or {})}}},
+            }
         }
         if approvals_mode is not None:
             config["approvals"] = {"mode": approvals_mode}

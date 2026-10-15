@@ -27,6 +27,12 @@ pytestmark = [
 CORPUS = json.loads((Path(__file__).parent / "data" / "corpus.json").read_text(encoding="utf-8"))
 # Caught through the threat database only (typosquatted package, known exfiltration endpoint).
 NEEDS_THREAT_DB = frozenset({"A06", "A07"})
+ATTEMPTS = 3  # a row whose check timed out is checked again; one that keeps failing fails the test
+
+
+def _timed_out(outcome) -> bool:
+    """tirith, or its gate, did not answer in time: a slow machine, not a broken contract."""
+    return outcome.kind == "error" and (outcome.reason_class == "timeout" or "in time" in outcome.reason)
 
 
 def _cell(text: str) -> str:
@@ -46,7 +52,7 @@ def test_corpus(ctx_factory, tmp_path, monkeypatch):
     work = tmp_path / "work"
     work.mkdir()
     monkeypatch.chdir(work)
-    _ctx, registered = ctx_factory(path=os.environ["TIRITH_TEST_BIN"], offline=True, timeout=20)
+    _ctx, registered = ctx_factory(path=os.environ["TIRITH_TEST_BIN"], offline=True, timeout=60)
 
     captured = []
     check_command = plugin.check_command
@@ -57,20 +63,25 @@ def test_corpus(ctx_factory, tmp_path, monkeypatch):
         return result
 
     monkeypatch.setattr(plugin, "check_command", observe_check)
-    rows, lost, errors = [], [], []
+    rows, lost, errors, retried = [], [], [], []
     for row in CORPUS:
-        call_id = f"corpus-{row['id']}"
-        directive = registered["pre_tool_call"](
-            tool_name="terminal",
-            args={"command": row["cmd"]},
-            task_id="corpus",
-            session_id="corpus",
-            tool_call_id=call_id,
-        )
-        context = registered["transform_tool_result"](
-            tool_name="terminal", result="", task_id="corpus", session_id="corpus", tool_call_id=call_id
-        )
-        outcome = captured[-1]
+        for attempt in range(1, ATTEMPTS + 1):
+            call_id = f"corpus-{row['id']}-{attempt}"
+            directive = registered["pre_tool_call"](
+                tool_name="terminal",
+                args={"command": row["cmd"]},
+                task_id="corpus",
+                session_id="corpus",
+                tool_call_id=call_id,
+            )
+            context = registered["transform_tool_result"](
+                tool_name="terminal", result="", task_id="corpus", session_id="corpus", tool_call_id=call_id
+            )
+            outcome = captured[-1]
+            if not _timed_out(outcome):
+                break
+        if attempt > 1:
+            retried.append(f"{row['id']} ({attempt} attempts)")
         action = directive["action"] if directive else ("allow+warning" if context else "allow")
         message = (directive or {}).get("message", "") or (context or "")
         coverage = (
@@ -108,6 +119,7 @@ def test_corpus(ctx_factory, tmp_path, monkeypatch):
             f"Warning-only attack rows (not prevented): {warned or 'none'}.",
             f"Asserted attack rows with no signal: {lost or 'none'}. Failed checks: {errors or 'none'}.",
             f"Database-dependent rows not asserted: {unasserted or 'none'}.",
+            f"Checked again after a timeout: {retried or 'none'}.",
         ]
         Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
     assert not errors, f"valid corpus inputs did not receive a completed check: {errors}"

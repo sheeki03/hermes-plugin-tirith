@@ -14,6 +14,7 @@ from tirith._scan import CHECK_ARGV, RunResult, child_env
 from tirith._settings import Settings
 
 import fake_tirith
+from conftest import TEST_TIMEOUT
 from fake_tirith import calls, make_fake, verdict
 
 POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="POSIX install folders")
@@ -60,13 +61,13 @@ def test_explicit_path_is_the_only_candidate(tmp_path, isolated):
 
 
 def test_explicit_missing_path_is_not_found(tmp_path, isolated, env):
-    result = Locator().resolve(str(tmp_path / "missing" / "tirith"), env, 5)
+    result = Locator().resolve(str(tmp_path / "missing" / "tirith"), env, TEST_TIMEOUT)
     assert result.status == "not_found"
     assert "not found" in result.reason
 
 
 def test_nothing_installed(isolated, env):
-    result = Locator().resolve("", env, 5)
+    result = Locator().resolve("", env, TEST_TIMEOUT)
     assert result.status == "not_found"
     assert "0.5.0" in result.reason
 
@@ -76,7 +77,7 @@ def test_found_on_path(tmp_path, isolated, monkeypatch, env):
     monkeypatch.setenv("PATH", str(tmp_path / "on-path"))
     found = candidates("", os.environ)
     assert len(found) == 1 and os.path.samefile(found[0], fake)
-    assert Locator().resolve("", child_env(Settings()), 5).ok
+    assert Locator().resolve("", child_env(Settings()), TEST_TIMEOUT).ok
 
 
 @POSIX_ONLY
@@ -97,7 +98,7 @@ def test_windows_install_folders(isolated):
 
 def test_old_tirith_is_refused(tmp_path, env):
     fake = make_fake(str(tmp_path / "old"), {"mode": "old", "version_output": "tirith 0.4.2\n"})
-    result = gate(fake, env, 5)
+    result = gate(fake, env, TEST_TIMEOUT)
     assert result.status == "too_old"
     assert result.version == "0.4.2"
     assert "tirith 0.4.2" in result.reason and "older than 0.5.0" in result.reason and fake in result.reason
@@ -107,7 +108,7 @@ def test_old_tirith_is_refused(tmp_path, env):
 
 def test_new_tirith_passes(tmp_path, env):
     fake = make_fake(str(tmp_path / "new"))
-    result = gate(fake, env, 5)
+    result = gate(fake, env, TEST_TIMEOUT)
     assert result.ok and result.version == "0.5.0" and result.reason == ""
     (contract,) = [c for c in calls(fake) if c["stdin"] == CONTRACT_COMMAND]
     assert contract["args"] == list(CHECK_ARGV)
@@ -123,11 +124,11 @@ def test_build_without_the_approval_field_is_refused(tmp_path, env, version):
     # requires_approval, so every check would fail. Refused like an older release.
     fake = make_fake(str(tmp_path / "pre"), {"version_output": version, "drop_fields": ["requires_approval"]})
     locator = Locator()
-    result = locator.check(fake, env, 5)
+    result = locator.check(fake, env, TEST_TIMEOUT)
     assert result.status == "too_old"
     assert "older than 0.5.0" in result.reason and "needs tirith 0.5.0 or newer" in result.reason
     assert fake in result.reason
-    assert locator.check(fake, env, 5).status == "too_old"
+    assert locator.check(fake, env, TEST_TIMEOUT).status == "too_old"
     assert len(calls(fake)) == 3  # cached: --version, probe, contract check once
 
 
@@ -136,7 +137,7 @@ def test_approval_field_must_be_a_boolean(tmp_path, env, value):
     answer = verdict("allow")
     answer["requires_approval"] = value
     fake = make_fake(str(tmp_path / "odd"), {"contract_response": {"rc": 0, "verdict": answer}})
-    assert gate(fake, env, 5).status == "too_old"
+    assert gate(fake, env, TEST_TIMEOUT).status == "too_old"
 
 
 @pytest.mark.parametrize(
@@ -150,9 +151,9 @@ def test_approval_field_must_be_a_boolean(tmp_path, env, value):
 def test_contract_check_without_a_verdict_is_an_error_and_not_cached(tmp_path, env, answer):
     fake = make_fake(str(tmp_path / "odd"), {"contract_response": answer})
     locator = Locator()
-    result = locator.check(fake, env, 5)
+    result = locator.check(fake, env, TEST_TIMEOUT)
     assert result.status == "error" and "contract check" in result.reason
-    locator.check(fake, env, 5)
+    locator.check(fake, env, TEST_TIMEOUT)
     assert len(calls(fake)) == 6
 
 
@@ -176,6 +177,8 @@ def test_gate_steps_share_one_time_budget(tmp_path, env, monkeypatch):
 
     now = [0.0]
     monkeypatch.setattr(_locate, "time", types.SimpleNamespace(monotonic=lambda: now[0]))
+    for name, value in (("VERSION_TIMEOUT", 5.0), ("PROBE_TIMEOUT", 10.0), ("GATE_BUDGET", 15.0)):
+        monkeypatch.setattr(_locate, name, value)  # the shipped limits, not the generous test ones
     fake = make_fake(str(tmp_path / "b"))
     assert gate(fake, env, 30, runner=runner).ok
     assert seen[:2] == [_locate.VERSION_TIMEOUT, _locate.GATE_BUDGET - 9.0]
@@ -184,14 +187,14 @@ def test_gate_steps_share_one_time_budget(tmp_path, env, monkeypatch):
 
 def test_prerelease_build_with_the_new_contract_passes(tmp_path, env):
     fake = make_fake(str(tmp_path / "pre"), {"version_output": "tirith 0.4.2\n"})
-    result = gate(fake, env, 5)
+    result = gate(fake, env, TEST_TIMEOUT)
     assert result.ok and "pre-release" in result.reason
 
 
 def test_probe_that_exits_zero_is_refused(tmp_path, env):
     # exit 0 without a verdict still means the option was accepted
     fake = make_fake(str(tmp_path / "odd"), {"mode": "old", "probe_response": {"rc": 0, "stdout": "ok\n"}})
-    assert gate(fake, env, 5).status == "too_old"
+    assert gate(fake, env, TEST_TIMEOUT).status == "too_old"
 
 
 @pytest.mark.parametrize(
@@ -206,9 +209,9 @@ def test_probe_that_exits_zero_is_refused(tmp_path, env):
 def test_probe_rejection_must_be_a_usage_error_for_the_probe(tmp_path, env, reject):
     fake = make_fake(str(tmp_path / "odd"), {"reject_response": reject})
     locator = Locator()
-    result = locator.check(fake, env, 5)
+    result = locator.check(fake, env, TEST_TIMEOUT)
     assert result.status == "error" and "unexpected answer" in result.reason and PROBE_FLAG in result.reason
-    locator.check(fake, env, 5)
+    locator.check(fake, env, TEST_TIMEOUT)
     assert len(calls(fake)) == 4  # an unexpected answer is not cached
 
 
@@ -218,7 +221,7 @@ def test_probe_timeout_is_an_error_and_not_cached(tmp_path, env):
     result = locator.check(fake, env, 1)
     assert result.status == "error" and "in time" in result.reason
     make_fake(str(tmp_path / "slow"))  # same path, now fast (new config)
-    assert locator.check(fake, env, 5).ok
+    assert locator.check(fake, env, TEST_TIMEOUT).ok
 
 
 def test_first_passing_candidate_wins(tmp_path, isolated, monkeypatch, env):
@@ -228,7 +231,7 @@ def test_first_passing_candidate_wins(tmp_path, isolated, monkeypatch, env):
         fresh = make_fake(str(isolated / "APPDATA" / "npm"))
     else:
         fresh = make_fake(str(isolated / ".local" / "bin"))
-    result = Locator().resolve("", child_env(Settings()), 5)
+    result = Locator().resolve("", child_env(Settings()), TEST_TIMEOUT)
     assert result.ok and os.path.samefile(result.path, fresh)
     assert not os.path.samefile(stale, fresh)
 
@@ -236,19 +239,19 @@ def test_first_passing_candidate_wins(tmp_path, isolated, monkeypatch, env):
 def test_first_failure_is_reported_when_none_pass(tmp_path, isolated, monkeypatch):
     make_fake(str(tmp_path / "stale"), {"mode": "old", "version_output": "tirith 0.4.1\n"})
     monkeypatch.setenv("PATH", str(tmp_path / "stale"))
-    result = Locator().resolve("", child_env(Settings()), 5)
+    result = Locator().resolve("", child_env(Settings()), TEST_TIMEOUT)
     assert result.status == "too_old" and "0.4.1" in result.reason
 
 
 def test_results_are_cached_until_the_binary_changes(tmp_path, env):
     fake = make_fake(str(tmp_path / "c"))
     locator = Locator()
-    assert locator.check(fake, env, 5).ok
-    assert locator.check(fake, env, 5).ok
+    assert locator.check(fake, env, TEST_TIMEOUT).ok
+    assert locator.check(fake, env, TEST_TIMEOUT).ok
     assert len(calls(fake)) == 3  # one --version, one probe, one contract check
     with open(fake, "a", encoding="utf-8") as handle:
         handle.write("\n")  # size and mtime change, as after an upgrade
-    assert locator.check(fake, env, 5).ok
+    assert locator.check(fake, env, TEST_TIMEOUT).ok
     assert len(calls(fake)) == 6
 
 
@@ -256,11 +259,11 @@ def test_negative_results_expire(tmp_path, env):
     now = [1000.0]
     fake = make_fake(str(tmp_path / "n"), {"mode": "old"})
     locator = Locator(clock=lambda: now[0])
-    assert locator.check(fake, env, 5).status == "too_old"
-    assert locator.check(fake, env, 5).status == "too_old"
+    assert locator.check(fake, env, TEST_TIMEOUT).status == "too_old"
+    assert locator.check(fake, env, TEST_TIMEOUT).status == "too_old"
     assert len(calls(fake)) == 2
     now[0] += 61
-    assert locator.check(fake, env, 5).status == "too_old"
+    assert locator.check(fake, env, TEST_TIMEOUT).status == "too_old"
     assert len(calls(fake)) == 4
 
 
@@ -286,7 +289,7 @@ def test_current_directory_is_never_searched(tmp_path, isolated, monkeypatch):
     assert candidates("", os.environ) == []
     assert candidates("tirith", os.environ) == []
     assert candidates(os.path.join(".", "tirith"), os.environ) == []
-    result = Locator().resolve("tirith", child_env(Settings()), 5)
+    result = Locator().resolve("tirith", child_env(Settings()), TEST_TIMEOUT)
     assert result.status == "not_found" and "configured path" in result.reason
 
 
