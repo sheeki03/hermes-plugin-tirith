@@ -80,19 +80,29 @@ nothing typed, goes through. `close` sends end of input, and a shell runs the te
 input even without Enter, so a `close` checks everything typed so far as a whole command (with nothing
 typed it goes through).
 
-Overlapping calls are not ordered by callback completion. Multiple delivered
-writes, an IO error that may follow partial delivery, or an unanswered call leave
-explicit uncertainty; with `fail_closed: true`, later submit/close requests ask
-rather than scan an invented line. Elapsed time never confirms delivery or erases
-pending input. A confirmed process exit clears its input state. Turning off
-`fail_closed` intentionally permits these unknown calls unchecked.
+**When the plugin cannot know what was typed.** Hermes can run input calls for one background process
+in parallel, and a write can fail after some of its bytes reached the process, so neither the order of
+Hermes's callbacks nor elapsed time counts as proof of what the process received:
 
-Tracking is bounded (1024 processes with unfinished input, 4096 unfinished calls). When it is
-full, input that would need a new entry fails closed for that call only; nothing tracked is
-evicted, and tracking recovers as calls finish and processes exit. Provider call IDs are scoped by session, task,
-turn and API request so a later response can reuse an ID without consuming an
-earlier call's pending input. Long finding text is clipped after reserving space
-for the sanitized command excerpt and directory in approval prompts.
+- While another input call for the same process has not finished, a new one is a failed check.
+- If overlapping calls both reached the process, or Hermes did not confirm whether a call's input
+  arrived (an error reply, a timeout, a cancelled call), the plugin no longer knows what the process
+  holds. Every later input to that process (write, submit or close) is a failed check until Hermes
+  reports that the process has exited.
+
+A failed check asks you (and is refused in unattended runs). The prompt shows the plugin's best guess
+of the typed text: what was confirmed, then the uncertain calls in the order they were checked. tirith
+still checks that guess; if it refuses, the input is refused, and its findings are listed in the prompt.
+Approving covers only that process and that text. With `fail_closed: false` the check of the best guess
+is all that happens: its result is used like any other check (a block asks, a CRITICAL finding is
+refused, a warning is attached), and if that check fails too, the input runs.
+
+Tracking is bounded (1024 processes with unfinished input, 4096 unfinished calls). When it is full,
+input that would need a new entry fails closed for that call only; nothing tracked is evicted, and
+tracking recovers as calls finish and processes exit. Calls are matched across Hermes's hooks by the
+provider's call id together with the session, task, turn and API request ids, so a later response that
+reuses a call id cannot take over an earlier call's checked command, warning or typed input. Long
+finding text is clipped after reserving space for the command excerpt and directory in approval prompts.
 
 The agent never sees tirith's long descriptions or fix-it advice, only the finding titles and rule ids,
 so it cannot be steered by them. The command excerpt in the prompt shows control, bidi and zero-width
