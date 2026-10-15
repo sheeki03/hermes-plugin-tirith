@@ -9,7 +9,7 @@ Ordinary warnings run with an advisory; critical blocks are refused by default.
 ## Requirements
 
 - tirith **0.5.0 or later**, installed by you. The plugin never downloads, installs or updates tirith.
-- Hermes **0.21.5 or later**.
+- Hermes **0.21.5 or later** (tested with the releases 0.21.5, 0.21.6, 0.21.7, 0.22.0, 0.22.1 and 0.22.2).
 - Linux, macOS or Windows. Python standard library only; nothing to `pip install`.
 
 ## Install
@@ -37,8 +37,8 @@ promise an automatic migration pointer.
    hermes plugins enable tirith
    ```
 
-3. If your older Hermes build still contains the built-in tirith check, turn
-   it off to avoid checking commands twice:
+3. Hermes 0.21.5 still contains its built-in tirith check. Turn it off so commands are not checked
+   twice (Hermes 0.21.6 and later do not have it):
 
    ```
    hermes config set security.tirith_enabled false
@@ -152,14 +152,12 @@ still saves an "Always" answer to `command_allowlist` in `config.yaml`; such ent
 (`plugin_rule:tirith:...:s...`) never match again and can be deleted. For warnings with
 `warn_action: approve`, "Always" is permanent for that exact command, directory and finding set.
 
-## Older Hermes builds
+## Hermes 0.21.5
 
-Some older installations retain a built-in tirith check before plugins. The
-plugin detects its actual presence and warns once; on those installations run
-`hermes config set security.tirith_enabled false` to avoid duplicate checking.
-The qualified 0.21.5 canary and current 0.21.7 source trees no longer contain it.
-Hermes 0.21.4 and earlier are unsupported: their hook failure behavior could let
-a command run after a plugin crash or timeout.
+Hermes 0.21.5 still runs its built-in tirith check before plugins, so a command can be checked (and
+prompted) twice. The plugin notices the built-in check and warns once; run
+`hermes config set security.tirith_enabled false`. Hermes 0.21.6 and later no longer contain it.
+Hermes 0.21.4 and earlier are not supported: there a crashing or slow plugin let the command run.
 
 ## Limits
 

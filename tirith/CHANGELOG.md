@@ -39,4 +39,4 @@ First release.
 - Background calls reserve state before scanning. Overlapping writes, partial-delivery IO errors and unconfirmed outcomes retain uncertainty; timeout/expiry cannot manufacture delivery. Late refused callbacks and request-scoped provider IDs cannot consume another command.
 - Approval prompts reserve command/CWD space before clipping findings. Required policy confirmations use session-salted approval keys.
 - Corpus reporting separates proposed decisions, warning-only permissions, failed checks and unasserted database-dependent coverage; no corpus payload is executed.
-- Native Hermes compatibility is checked against immutable 0.21.5 canary and 0.21.7 stable sources; publication and catalog submission remain separate.
+- Tested with the Hermes releases 0.21.5, 0.21.6, 0.21.7, 0.22.0, 0.22.1 and 0.22.2; CI runs the Hermes tests on 0.21.5, 0.21.7 and 0.22.2.

@@ -22,7 +22,7 @@ brew install tirith
 # 2. install and enable the plugin
 hermes plugins install sheeki03/hermes-plugin-tirith/tirith
 hermes plugins enable tirith
-# 3. only if your older Hermes build still has its built-in Tirith check
+# 3. Hermes 0.21.5 only: turn off its built-in tirith check so commands are not checked twice
 hermes config set security.tirith_enabled false
 ```
 
@@ -59,8 +59,9 @@ Test groups:
 The corpus measures proposed scanner/hook decisions, not shell execution.
 Warning-only permissions are not prevention; checker failures and
 database-dependent rows not asserted without intelligence are reported separately.
-CI pins both the 0.21.5 canary and stable 0.21.7 Hermes sources. Local native host
-verification does not certify Windows or a final published plugin artifact.
+CI runs the Hermes tests on the released Hermes 0.21.5 (the minimum), 0.21.7 and 0.22.2, pinned by
+commit with their tags fetched so Hermes knows its version; 0.21.6, 0.22.0 and 0.22.1 were tested
+locally. Hermes tests do not run on Windows, and none of this certifies a published plugin artifact.
 
 ```
 .venv/bin/python -m pytest -m hermes

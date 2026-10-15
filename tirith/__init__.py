@@ -64,7 +64,7 @@ def terminal_command(args: Any) -> str | None:
 
 
 def _double_scan_check() -> None:
-    # Hermes 0.21.5 and earlier also run a built-in tirith check. Only look when Hermes's
+    # Hermes 0.21.5 still runs its built-in tirith check. Only look when Hermes's
     # own ``tools`` package is already loaded, so nothing is imported on our behalf.
     if "tools" not in sys.modules:
         return
