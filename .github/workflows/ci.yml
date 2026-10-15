@@ -21,8 +21,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Hermes revision the loader tests and the catalog validation run against. Bump by hand in a reviewed commit.
-  HERMES_REF: 0e37a439bda15ef3c28a4d20593964d7c6a527a6
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
@@ -64,13 +62,19 @@ jobs:
         run: python -m pytest -m "not realtirith and not hermes"
 
   hermes:
-    name: hermes loader (${{ matrix.os }})
+    name: hermes loader (${{ matrix.os }}, ${{ matrix.host.label }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # Immutable minimum 0.21.5 canary and current stable 0.21.7.
+        host:
+          - label: minimum-0.21.5
+            ref: a28a5d03a9fa60418db5f44f3436fa2aa029c8f2
+          - label: stable-0.21.7
+            ref: 71d34bad1045610252eda02ee79549436896e784
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -78,7 +82,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: NousResearch/hermes-agent
-          ref: ${{ env.HERMES_REF }}
+          ref: ${{ matrix.host.ref }}
           path: hermes-agent
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -103,10 +107,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: NousResearch/hermes-agent/.github/actions/plugin-validate@0e37a439bda15ef3c28a4d20593964d7c6a527a6
+      - uses: NousResearch/hermes-agent/.github/actions/plugin-validate@71d34bad1045610252eda02ee79549436896e784
         with:
           path: tirith
-          hermes-ref: 0e37a439bda15ef3c28a4d20593964d7c6a527a6
+          hermes-ref: 71d34bad1045610252eda02ee79549436896e784
 
   real-tirith:
     # Runs only when a tirith is provided: workflow_dispatch with tirith_ref builds that commit as the

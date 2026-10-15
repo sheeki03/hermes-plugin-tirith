@@ -1,7 +1,7 @@
-"""Run the 64-command corpus through the plugin with a real tirith (TIRITH_TEST_BIN).
+"""Run the reconstructed command corpus through the plugin with a real tirith.
 
-Fails when an attack would run with no prompt, no refusal and no warning. Attacks tirith only
-warns about run with the warning appended (``warn_action: allow``) and are listed in the report.
+This measures check coverage and proposed gate decisions, never command execution.
+Warning-only attack rows would be permitted with an advisory; they are not prevented.
 Benign results are reported, not asserted: the benign target is set by the tirith release.
 
 The test runs offline in an empty home, so tirith has no threat database. Rows that tirith can
@@ -16,6 +16,8 @@ import os
 from pathlib import Path
 
 import pytest
+
+import tirith as plugin
 
 pytestmark = [
     pytest.mark.realtirith,
@@ -46,7 +48,16 @@ def test_corpus(ctx_factory, tmp_path, monkeypatch):
     monkeypatch.chdir(work)
     _ctx, registered = ctx_factory(path=os.environ["TIRITH_TEST_BIN"], offline=True, timeout=20)
 
-    rows, lost = [], []
+    captured = []
+    check_command = plugin.check_command
+
+    def observe_check(*args, **kwargs):
+        result = check_command(*args, **kwargs)
+        captured.append(result[1])
+        return result
+
+    monkeypatch.setattr(plugin, "check_command", observe_check)
+    rows, lost, errors = [], [], []
     for row in CORPUS:
         call_id = f"corpus-{row['id']}"
         directive = registered["pre_tool_call"](
@@ -56,25 +67,48 @@ def test_corpus(ctx_factory, tmp_path, monkeypatch):
             session_id="corpus",
             tool_call_id=call_id,
         )
-        context = registered["transform_tool_result"](tool_name="terminal", result="", tool_call_id=call_id)
+        context = registered["transform_tool_result"](
+            tool_name="terminal", result="", task_id="corpus", session_id="corpus", tool_call_id=call_id
+        )
+        outcome = captured[-1]
         action = directive["action"] if directive else ("allow+warning" if context else "allow")
         message = (directive or {}).get("message", "") or (context or "")
-        rows.append((row["id"], row["expected"], row["set"], action, message))
-        if row["expected"] == "attack" and action == "allow" and (data_home or row["id"] not in NEEDS_THREAT_DB):
+        coverage = (
+            "check failed"
+            if outcome.kind == "error"
+            else ("intelligence not asserted" if not data_home and row["id"] in NEEDS_THREAT_DB else "asserted")
+        )
+        rows.append((row["id"], row["expected"], row["set"], action, coverage, message))
+        if outcome.kind == "error":
+            errors.append(row["id"])
+        elif row["expected"] == "attack" and action == "allow" and coverage == "asserted":
             lost.append(row["id"])
 
     report = os.environ.get("TIRITH_CORPUS_REPORT")
     if report:
-        lines = ["| id | expected | set | Hermes action | findings |", "|---|---|---|---|---|"]
-        lines += [f"| {i} | {e} | {s} | {a} | {_cell(m)[:300]} |" for i, e, s, a, m in rows]
+        lines = [
+            "| id | expected | set | Proposed Hermes decision | Coverage | Findings |",
+            "|---|---|---|---|---|---|",
+        ]
+        lines += [f"| {i} | {e} | {s} | {a} | {c} | {_cell(m)[:300]} |" for i, e, s, a, c, m in rows]
         benign = [r for r in rows if r[1] == "benign"]
-        warned = [r[0] for r in rows if r[1] == "attack" and r[3] == "allow+warning"]
+        attacks = [r for r in rows if r[1] == "attack"]
+        warned = [r[0] for r in attacks if r[3] == "allow+warning"]
+        unasserted = [r[0] for r in attacks if r[4] == "intelligence not asserted"]
         lines += [
             "",
-            f"Benign: {sum(r[3] == 'block' for r in benign)} refused, {sum(r[3] == 'approve' for r in benign)} "
-            f"asked, {sum(r[3].startswith('allow') for r in benign)} ran.",
-            f"Attacks that ran with a warning: {warned or 'none'}. Attacks lost: {lost or 'none'}"
-            + ("" if data_home else f" (not asserted without a threat database: {sorted(NEEDS_THREAT_DB)})."),
+            "No corpus command was executed. These are scanner and hook decisions, not prevention measurements.",
+            f"Benign decisions: {sum(r[3] == 'block' for r in benign)} refusals, "
+            f"{sum(r[3] == 'approve' for r in benign)} approval requests, "
+            f"{sum(r[3].startswith('allow') for r in benign)} permissions.",
+            f"Attack decisions: {sum(r[3] == 'block' for r in attacks)} refusals, "
+            f"{sum(r[3] == 'approve' for r in attacks)} approval requests, "
+            f"{sum(r[3] == 'allow+warning' for r in attacks)} warning-only permissions, "
+            f"{sum(r[3] == 'allow' for r in attacks)} no-signal permissions.",
+            f"Warning-only attack rows (not prevented): {warned or 'none'}.",
+            f"Asserted attack rows with no signal: {lost or 'none'}. Failed checks: {errors or 'none'}.",
+            f"Database-dependent rows not asserted: {unasserted or 'none'}.",
         ]
         Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
-    assert not lost, f"attacks that would run with no prompt, refusal or warning: {lost}"
+    assert not errors, f"valid corpus inputs did not receive a completed check: {errors}"
+    assert not lost, f"asserted attacks received no prompt, refusal or warning: {lost}"

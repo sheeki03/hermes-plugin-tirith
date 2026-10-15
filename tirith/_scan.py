@@ -60,6 +60,8 @@ class ScanOutcome:
     rc: int | None = None
     findings: tuple[Finding, ...] = ()
     deferred: bool = False
+    requires_approval: bool = False
+    approval_rule: str = ""
     binary: str = ""
     version: str = ""
     duration_ms: int = 0
@@ -249,7 +251,12 @@ def classify(result: RunResult, binary: str = "", version: str = "") -> ScanOutc
     verdict = parse_verdict(result.stdout.decode("utf-8", errors="replace"))
     if verdict is None:
         if rc in _RC_KIND:
-            return error_outcome("no_verdict", f"tirith exited with code {rc} without a verdict", **common)
+            return error_outcome(
+                "no_verdict",
+                f"tirith exited with code {rc} without a verdict",
+                requires_approval=rc == 3,
+                **common,
+            )
         return error_outcome("exit_code", f"tirith exited with code {rc}", **common)
     findings = normalise_findings(verdict.get("findings") or [])
     action_kind = _ACTION_KIND.get(verdict.get("action", ""), "error")
@@ -261,13 +268,29 @@ def classify(result: RunResult, binary: str = "", version: str = "") -> ScanOutc
     if rc_kind != action_kind and not (rc_kind == "allow" and action_kind == "bypass"):
         kind = rc_kind if _STRICTNESS[rc_kind] > _STRICTNESS[action_kind] else action_kind
         notes.append(f"tirith exit code {rc} and verdict {verdict.get('action')!r} disagree; using {kind}")
+    requires_approval = verdict.get("requires_approval")
+    if not isinstance(requires_approval, bool):
+        if kind != "block":
+            return error_outcome(
+                "verdict",
+                "tirith did not provide a valid approval requirement",
+                findings=findings,
+                requires_approval=kind == "warn_ack" or rc == 3,
+                **common,
+            )
+        requires_approval = False
+        notes.append("tirith omitted valid approval metadata; retaining its block")
+    approval = {
+        "requires_approval": requires_approval,
+        "approval_rule": _text(verdict.get("approval_rule")),
+    }
     if kind == "error":
         if action_kind == "error":
             reason_class, reason = "verdict", "tirith returned a verdict this plugin does not know"
         else:
             reason_class, reason = "exit_code", f"tirith exited with code {rc}"
-        return error_outcome(reason_class, reason, findings=findings, notes=tuple(notes), **common)
-    return ScanOutcome(kind=kind, findings=findings, deferred=(rc == 4), notes=tuple(notes), **common)
+        return error_outcome(reason_class, reason, findings=findings, notes=tuple(notes), **approval, **common)
+    return ScanOutcome(kind=kind, findings=findings, deferred=(rc == 4), notes=tuple(notes), **approval, **common)
 
 
 def encode_command(command: str) -> bytes | ScanOutcome:

@@ -32,7 +32,14 @@ KNOWN_FLAGS = {"--json", "--non-interactive", "--interactive", "--offline", "--d
 MAX_STDIN = 1024 * 1024
 
 
-def verdict(action: str, findings: list[tuple] | None = None, *, bypass_honored: bool = False) -> dict[str, Any]:
+def verdict(
+    action: str,
+    findings: list[tuple] | None = None,
+    *,
+    bypass_honored: bool = False,
+    requires_approval: bool = False,
+    approval_rule: str = "",
+) -> dict[str, Any]:
     """Build a schema-3 style verdict. ``findings``: (rule_id, severity, title[, custom_rule_id])."""
     rows = []
     for item in findings or []:
@@ -54,6 +61,8 @@ def verdict(action: str, findings: list[tuple] | None = None, *, bypass_honored:
         "tier_reached": 3,
         "bypass_requested": bypass_honored,
         "bypass_honored": bypass_honored,
+        "requires_approval": requires_approval,
+        "approval_rule": approval_rule or None,
         "interactive_detected": False,
         "policy_path_used": None,
         "timings_ms": {"total_ms": 1.0},

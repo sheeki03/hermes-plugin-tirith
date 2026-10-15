@@ -9,9 +9,9 @@ input even without Enter (any shell on a pipe; dash on a PTY after a second Ctrl
 completes whatever was typed. This module keeps the unfinished input of every process and hands the
 plugin the whole text that a call completes.
 
-Input is recorded only once Hermes reports that the call ran (``post_tool_call``): a refused call
-never reaches the process, so its text must not replace what the process really holds. Calls that
-were let through but have not reported back yet count as typed.
+Input is committed only once Hermes confirms that the call ran (``post_tool_call``): a refused
+call never reaches the process. An unconfirmed call prevents later input from assuming an order.
+Neither callback order nor elapsed time proves the order or delivery of physical PTY/pipe writes.
 
 Keys that a terminal treats as editing keys (Tab completion, Ctrl-A, Esc sequences, history recall)
 or that a shell drops (NUL) make the line that runs differ from the text, so such input is reported
@@ -33,7 +33,8 @@ EOF_ACTIONS = frozenset({"close"})  # end of input: the typed text runs as it is
 INTERRUPT_KEYS = frozenset("\x03\x04")  # Ctrl-C and Ctrl-D on their own
 MAX_INPUT_BYTES = 1024 * 1024  # the most tirith reads; more fails closed
 MAX_PROCESSES = 1024  # processes with unfinished input; more fails closed
-INFLIGHT_TTL = 300.0  # a call with no result after this long is taken as written
+INFLIGHT_TTL = 300.0  # diagnostic age only: never a delivery confirmation
+MAX_CALLS = 4096  # outstanding calls and recent/unmatched completion ids
 _GONE = frozenset({"exited", "killed", "already_exited"})
 _WORD_BREAKS = " \t\n;&|()<>"
 
@@ -215,20 +216,24 @@ def advance(prior: str, keys: str) -> str:
     return text[end + 1 :]
 
 
-def was_written(result: Any, status: Any = None) -> bool:
-    """Whether a finished ``write`` / ``submit`` reached the process (unknown counts as yes)."""
+def was_written(result: Any, status: Any = None) -> bool | None:
+    """True for confirmed delivery, False for definite refusal, None for unknown delivery."""
     if status == "blocked":
         return False
+    if status in ("timeout", "cancelled"):
+        return None  # Hermes may abandon a worker without knowing whether its physical write happened
     try:
         parsed = json.loads(result) if isinstance(result, str) else result
     except ValueError:
-        return True
+        return None
     if isinstance(parsed, dict):
         if parsed.get("status") == "ok":
             return True
-        if "error" in parsed or parsed.get("status") in ("error", "not_found", "already_exited"):
+        if parsed.get("status") in ("not_found", "already_exited"):
             return False
-    return True
+        # Hermes wraps PTY/pipe write AND flush exceptions as generic errors.
+        # Some bytes may already have reached the process when a flush fails.
+    return None
 
 
 def finished_processes(args: Any, result: Any) -> list[str]:
@@ -251,8 +256,25 @@ def _related(a: str, b: str) -> bool:
     return a != b and (a.startswith(b) or b.startswith(a))
 
 
+@dataclass
+class _Call:
+    process: str
+    keys: str
+    started: float
+    group: object
+    preparing: bool = False  # the pre hook can still return after a synthesized post
+    complete: bool = False
+    written: bool | None = None
+    oversized: bool = False
+
+
 class ProcessInput:
-    """Unfinished input per background process, guarded by one lock (hooks run on worker threads)."""
+    """Confirmed unfinished input and unresolved calls, guarded by one worker-thread lock.
+
+    Calls are reserved before scanning. Overlapping calls settle together: only a single confirmed
+    delivery has a known order. Multiple deliveries, unknown results, or lost tracking capacity
+    leave an explicit fail-closed state, not an invented command. Unconfirmed calls never expire.
+    """
 
     def __init__(
         self,
@@ -260,125 +282,246 @@ class ProcessInput:
         max_bytes: int = MAX_INPUT_BYTES,
         inflight_ttl: float = INFLIGHT_TTL,
         clock: Callable[[], float] = time.monotonic,
+        max_calls: int = MAX_CALLS,
     ):
         self._max_processes = max_processes
         self._max_bytes = max_bytes
         self._inflight_ttl = inflight_ttl
         self._clock = clock
+        self._max_calls = max_calls
         self._pending: OrderedDict[str, str] = OrderedDict()
-        self._inflight: OrderedDict[str, tuple[str, str, float]] = OrderedDict()
+        self._inflight: OrderedDict[object, _Call] = OrderedDict()
+        self._unknown: dict[str, tuple[str, str]] = {}
+        # True means a post arrived before its pre finished (or before it even registered).
+        # These tombstones cannot be evicted into an allow. Ordinary completed pres can.
+        self._finished: OrderedDict[object, bool] = OrderedDict()
+        self._overflow = False
         self._lock = threading.Lock()
 
     # -- internals (lock held) --
 
-    def _settle_stale(self) -> None:
-        now = self._clock()
-        for call_id, (process, keys, started) in list(self._inflight.items()):
-            if now - started > self._inflight_ttl:
-                del self._inflight[call_id]
-                self._apply(process, keys)
+    @staticmethod
+    def _matches(a: str, b: str) -> bool:
+        return a == b or _related(a, b)
+
+    def _remember_finished(self, call_id: object, awaiting_pre: bool) -> None:
+        previous = self._finished.pop(call_id, False)
+        self._finished[call_id] = previous or awaiting_pre
+        while len(self._finished) > self._max_calls:
+            _old_id, unresolved = self._finished.popitem(last=False)
+            if unresolved:
+                self._overflow = True
+
+    def _mark_unknown(self, process: str, error: tuple[str, str]) -> None:
+        names = self._pending.keys() | self._unknown.keys()
+        if process not in names and len(names) >= self._max_processes:
+            self._overflow = True
+            return
+        self._unknown.setdefault(process, error)
+
+    def _reserve(self, call_id: object, process: str, keys: str, *, preparing: bool) -> None:
+        if self._overflow or call_id in self._finished or call_id in self._inflight:
+            return
+        if len(self._inflight) >= self._max_calls:
+            self._overflow = True
+            return
+        overlapping = [entry for entry in self._inflight.values() if self._matches(entry.process, process)]
+        group = overlapping[0].group if overlapping else object()
+        groups = {entry.group for entry in overlapping}
+        for entry in self._inflight.values():
+            if entry.group in groups:
+                entry.group = group
+        oversized = len(keys.encode("utf-8", "surrogatepass")) > self._max_bytes
+        self._inflight[call_id] = _Call(
+            process, "" if oversized else keys, self._clock(), group, preparing=preparing, oversized=oversized
+        )
 
     def _apply(self, process: str, keys: str) -> None:
-        names = [name for name in self._pending if name == process or _related(name, process)]
-        prior = "".join(self._pending.pop(name) for name in names)
+        if process in self._unknown:
+            return
+        if any(_related(name, process) for name in self._pending.keys() | self._unknown.keys()):
+            self._mark_unknown(
+                process,
+                ("ambiguous", "input under different process ids cannot be put in a confirmed physical order"),
+            )
+            return
+        prior = self._pending.get(process, "")
+        text = prior + keys
+        if len(text.encode("utf-8", "surrogatepass")) > self._max_bytes:
+            self._mark_unknown(process, ("too_large", "the input for this background process is too large to check"))
+            return
         after = advance(prior, keys)
         if after:
+            names = self._pending.keys() | self._unknown.keys()
+            if process not in names and len(names) >= self._max_processes:
+                self._overflow = True
+                return
             self._pending[process] = after
+        else:
+            self._pending.pop(process, None)
+
+    def _settle(self, group: object) -> None:
+        calls = [(call_id, entry) for call_id, entry in self._inflight.items() if entry.group is group]
+        if not calls or any(entry.preparing or not entry.complete for _call_id, entry in calls):
+            return
+        for call_id, _entry in calls:
+            del self._inflight[call_id]
+        delivered = [entry for _call_id, entry in calls if entry.written is True]
+        unknown = [entry for _call_id, entry in calls if entry.written is None]
+        if unknown or len(delivered) > 1:
+            reason = (
+                ("unconfirmed", "Hermes has not confirmed what input reached this background process")
+                if unknown
+                else (
+                    "ambiguous",
+                    "overlapping input calls reached this background process; callback order does not prove "
+                    "the physical write order, so tirith cannot tell what it would run",
+                )
+            )
+            for entry in delivered + unknown:
+                self._mark_unknown(entry.process, reason)
+        elif delivered:
+            entry = delivered[0]
+            if entry.oversized:
+                self._mark_unknown(entry.process, ("too_large", "the input for this background process is too large"))
+            else:
+                self._apply(entry.process, entry.keys)
 
     # -- API --
 
-    def plan(self, process: str, keys: str, eof: bool = False) -> Plan | None:
-        """What to check before ``keys`` go to ``process`` (None: Hermes will refuse the call).
+    def plan(self, process: str, keys: str, eof: bool = False, *, call_id: object | None = None) -> Plan | None:
+        """Check an input call, reserving its id before any slow scanner or approval work.
 
-        ``eof``: the call ends the input (``close``), so all typed text is checked as it is, finished
-        line or not. With nothing typed it goes through.
+        ``eof`` checks all typed text. Calls without a host id use a private reservation which
+        cannot be confirmed by a post; they remain unconfirmed rather than being assumed written.
+        Direct callers can omit ``call_id`` to inspect a plan without reserving it.
         """
         if not process:
             return None
         with self._lock:
-            self._settle_stale()
-            others = [name for name in self._pending if _related(name, process)]
-            others += [name for name, _keys, _started in self._inflight.values() if _related(name, process)]
-            prior = self._pending.get(process, "") + "".join(
-                pending_keys for name, pending_keys, _started in self._inflight.values() if name == process
-            )
-            new_entry = process not in self._pending and len(self._pending) >= self._max_processes
-        text = prior + keys
-        if others:
-            return Plan(
-                process,
-                keys,
-                text,
-                error=(
+            prior = self._pending.get(process, "")
+            text = prior + keys
+            error = None
+            outstanding = [entry for entry in self._inflight.values() if self._matches(entry.process, process)]
+            names = self._pending.keys() | self._unknown.keys()
+            if self._overflow:
+                error = ("too_many", "background input tracking capacity was exhausted; delivery is unknown")
+            elif call_id is not None and call_id in self._finished:
+                error = (
+                    "finished",
+                    "Hermes already finished this input call; a late pre hook cannot register it again",
+                )
+            elif any(_related(name, process) for name in names):
+                error = (
                     "ambiguous",
                     "input for this background process was sent under different ids, so tirith cannot tell "
                     "what it would run",
-                ),
-            )
-        if not prior and interrupt_only(keys):
-            return Plan(process, keys, text)
-        if control_keys(text):
-            return Plan(
-                process,
-                keys,
-                text,
-                error=(
+                )
+            elif process in self._unknown:
+                error = self._unknown[process]
+            elif outstanding:
+                stale = any(self._clock() - entry.started > self._inflight_ttl for entry in outstanding)
+                error = (
+                    ("unconfirmed", "an earlier input call is still unconfirmed; elapsed time does not prove delivery")
+                    if stale
+                    else (
+                        "ambiguous",
+                        "another input call for this background process has not finished; tirith cannot prove "
+                        "the physical write order",
+                    )
+                )
+            elif not prior and interrupt_only(keys):
+                pass
+            elif control_keys(text):
+                error = (
                     "control_keys",
                     "the input has control keys (such as Tab, Esc, Ctrl or NUL) that a terminal can treat as "
                     "editing keys, so tirith cannot tell what would run",
-                ),
-            )
-        if len(text.encode("utf-8", "surrogatepass")) > self._max_bytes:
-            return Plan(
-                process,
-                keys,
-                text,
-                error=("too_large", "the input for this background process is too large to check (over 1 MiB)"),
-            )
-        if new_entry and advance(prior, keys):
-            return Plan(
-                process,
-                keys,
-                text,
-                error=("too_many", "too many background processes have unfinished input"),
-            )
-        normalised = text.replace("\r\n", "\n")
-        if eof:
-            return Plan(process, keys, text, scan=normalised if has_text(normalised) else None)
-        end = normalised.rfind("\n")
-        if end < 0:
-            return Plan(process, keys, text)
-        complete = normalised[:end]
-        return Plan(process, keys, text, scan=complete if has_text(complete) else None)
+                )
+            elif len(text.encode("utf-8", "surrogatepass")) > self._max_bytes:
+                error = ("too_large", "the input for this background process is too large to check (over 1 MiB)")
+            elif process not in names and len(names) >= self._max_processes and advance(prior, keys):
+                error = ("too_many", "too many background processes have unfinished input")
+            if call_id is not None:
+                self._reserve(call_id, process, keys, preparing=True)
+                if self._overflow:
+                    error = ("too_many", "background input tracking capacity was exhausted; delivery is unknown")
+            if error:
+                return Plan(process, keys, text, error=error)
+            if not prior and interrupt_only(keys):
+                return Plan(process, keys, text)
+            normalised = text.replace("\r\n", "\n")
+            if eof:
+                return Plan(process, keys, text, scan=normalised if has_text(normalised) else None)
+            end = normalised.rfind("\n")
+            complete = normalised[:end] if end >= 0 else ""
+            return Plan(process, keys, text, scan=complete if has_text(complete) else None)
 
-    def started(self, call_id: str, process: str, keys: str) -> None:
-        """A call that may run: its keys count as typed until its result arrives."""
+    def started(self, call_id: object, process: str, keys: str, *, permitted: bool = True) -> None:
+        """The pre hook returned. An earlier terminal post wins over this late registration."""
         with self._lock:
-            self._inflight.pop(call_id, None)
-            self._inflight[call_id] = (process, keys, self._clock())
-
-    def finished(self, call_id: str, written: bool, process: str = "", keys: str | None = None) -> None:
-        """The call's result: record its keys if they reached the process."""
-        with self._lock:
-            entry = self._inflight.pop(call_id, None)
-            if entry is None or not written:
+            if call_id in self._finished:
+                self._finished[call_id] = False  # the late pre has now returned; safe to retire this tombstone
+            else:
+                self._reserve(call_id, process, keys, preparing=False)
+            entry = self._inflight.get(call_id)
+            if entry is None:
                 return
-            self._apply(process or entry[0], entry[1] if keys is None else keys)
+            entry.preparing = False
+            if not permitted and not entry.complete:
+                entry.complete, entry.written = True, False
+                self._remember_finished(call_id, False)
+            self._settle(entry.group)
+
+    def finished(self, call_id: object, written: bool | None, process: str = "", keys: str | None = None) -> None:
+        """A terminal post: only a confirmed, uniquely ordered delivery advances a line."""
+        with self._lock:
+            if call_id in self._finished:
+                return  # duplicate posts must not change a blocked/finished call into a delivery
+            entry = self._inflight.get(call_id)
+            self._remember_finished(call_id, entry is None or entry.preparing)
+            if entry is None:
+                if written is not False and process:
+                    self._mark_unknown(process, ("unconfirmed", "input was reported without a matching pre hook"))
+                return
+            if process and process != entry.process:
+                if written is not False:
+                    error = ("ambiguous", "the process id changed after this input was checked")
+                    self._mark_unknown(entry.process, error)
+                    self._mark_unknown(process, error)
+            elif keys is not None and keys != entry.keys and not entry.oversized:
+                entry.oversized = len(keys.encode("utf-8", "surrogatepass")) > self._max_bytes
+                entry.keys = "" if entry.oversized else keys
+            entry.complete, entry.written = True, written
+            self._settle(entry.group)
 
     def record(self, process: str, keys: str, confirmed: bool = True) -> None:
-        """For a call with no id to pair its result with. Unconfirmed keys are kept whole."""
+        """Record a known serial delivery, or preserve an explicit unknown input state."""
         with self._lock:
-            if confirmed:
+            if confirmed and not any(self._matches(entry.process, process) for entry in self._inflight.values()):
                 self._apply(process, keys)
             else:
-                self._pending[process] = self._pending.pop(process, "") + keys
+                text = self._pending.get(process, "") + keys
+                self._mark_unknown(process, ("unconfirmed", "input delivery or its physical order was not confirmed"))
+                if not self._overflow and len(text.encode("utf-8", "surrogatepass")) <= self._max_bytes:
+                    self._pending[process] = text
 
     def forget(self, process: str) -> None:
-        """The process has finished; its unfinished input can no longer run."""
+        """A confirmed process exit retires its input, including outstanding pre hooks."""
         with self._lock:
             self._pending.pop(process, None)
+            self._unknown.pop(process, None)
+            groups = set()
+            for call_id, entry in list(self._inflight.items()):
+                if entry.process == process:
+                    groups.add(entry.group)
+                    del self._inflight[call_id]
+                    self._remember_finished(call_id, entry.preparing)
+            for group in groups:
+                self._settle(group)
 
     def pending(self, process: str) -> str:
+        """Confirmed unfinished text; unresolved delivery is represented by ``plan().error``."""
         with self._lock:
             return self._pending.get(process, "")
 
@@ -386,3 +529,6 @@ class ProcessInput:
         with self._lock:
             self._pending.clear()
             self._inflight.clear()
+            self._unknown.clear()
+            self._finished.clear()
+            self._overflow = False

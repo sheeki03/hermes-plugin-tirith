@@ -169,6 +169,7 @@ def _process_call(registered, call_id, action, data, sid="proc_4dae56ca81f6"):
         args=args,
         result='{"status": "ok", "bytes_written": 1}',
         task_id="task",
+        session_id="session",
         tool_call_id=call_id,
     )
     return directive

@@ -23,7 +23,7 @@ MAX_MESSAGE = 700
 MAX_EXCERPT = 200
 MAX_TITLE = 120
 MAX_LISTED = 5
-SALTED_KINDS = frozenset({"block", "bypass", "error"})
+SALTED_KINDS = frozenset({"approval", "block", "bypass", "error"})
 
 _ESCAPED_CATEGORIES = frozenset({"Cc", "Cf", "Co", "Cs", "Cn", "Zl", "Zp"})
 
@@ -105,6 +105,16 @@ def _cap(message: str) -> str:
     return message if len(message) <= MAX_MESSAGE else message[: MAX_MESSAGE - 1] + "…"
 
 
+def _approval_message(prefix: str, excerpt: str, where: str, details: str, suffix: str = "") -> str:
+    """Keep the operation visible; only optional details consume the remaining space."""
+    heading = f"{prefix} Command: {excerpt} (in {where})."
+    ending = f" {suffix}" if suffix else ""
+    available = MAX_MESSAGE - len(heading) - len(ending) - 1
+    if len(details) > available:
+        details = details[: available - 1] + "…"
+    return f"{heading} {details}{ending}"
+
+
 def _digest(kind: str, command: str, cwd: str, findings: Iterable[Finding]) -> str:
     material = json.dumps(
         ["tirith/1", kind, command, cwd, sorted([f.rule_id, f.custom_rule_id, f.severity] for f in findings)],
@@ -131,8 +141,8 @@ def rule_key(
 ) -> str:
     """The Hermes approval grain: one command, in one directory, with one finding set.
 
-    Keys for blocks, bypass requests and failed checks carry a salt from this Hermes process
-    and session, so "Always" for them never outlives the session.
+    Keys for policy approvals, blocks, bypass requests and failed checks carry a salt from
+    this Hermes process and session, so "Always" for them never outlives the session.
     """
     if kind == "error":
         digest = _digest(f"error:{reason_class}", command, cwd, ())
@@ -181,12 +191,33 @@ def decide(
     task_id: str = "",
 ) -> Decision:
     kind = outcome.kind
+    if (outcome.requires_approval or kind == "warn_ack") and kind != "block":
+        kind = "approval"
     excerpt = sanitize(command, MAX_EXCERPT)
     where = _display_cwd(cwd)
 
     def key(findings: tuple[Finding, ...] = ()) -> str:
         return rule_key(
             kind, command, cwd, findings, session_id=session_id, task_id=task_id, reason_class=outcome.reason_class
+        )
+
+    if kind == "approval":
+        if settings.warn_action == "block":
+            return Decision("block", kind, _block_message(outcome.findings))
+        details = format_findings(outcome.findings)
+        if outcome.approval_rule:
+            details = f"Policy rule: {_safe_id(outcome.approval_rule)}. {details}"
+        return Decision(
+            "approve",
+            kind,
+            _approval_message(
+                "tirith policy requires approval.",
+                excerpt,
+                where,
+                details,
+                "Approving applies to this exact command for this session only.",
+            ),
+            key(outcome.findings),
         )
 
     if kind == "allow":
@@ -196,27 +227,28 @@ def decide(
         return Decision(
             "approve",
             kind,
-            _cap(
-                "This command asks tirith to skip its check (TIRITH=0) and your tirith policy allows that. "
-                "A command written by the agent cannot waive the check on its own. "
-                f"Command: {excerpt} (in {where})."
+            _approval_message(
+                "This command asks tirith to skip its check.",
+                excerpt,
+                where,
+                "TIRITH=0 is allowed by your policy; a command written by the agent cannot waive the check on its own.",
             ),
             key(outcome.findings),
         )
 
-    if kind in ("warn", "warn_ack"):
+    if kind == "warn":
         findings = filter_findings(outcome.findings, settings)
         if not findings:
             return Decision("none", kind)
         text = format_findings(findings)
-        action = "approve" if kind == "warn_ack" else settings.warn_action
+        action = settings.warn_action
         if action == "block":
             return Decision("block", kind, _block_message(findings))
         if action == "approve":
             return Decision(
                 "approve",
                 kind,
-                _cap(f"tirith warns about this command: {text}. Command: {excerpt} (in {where})."),
+                _approval_message("tirith warns about this command.", excerpt, where, text),
                 key(findings),
             )
         context = f"\n\n[tirith] Warning about this command (it was allowed): {text}." if settings.warn_context else ""
@@ -230,10 +262,12 @@ def decide(
         return Decision(
             "approve",
             kind,
-            _cap(
-                f"tirith flagged this command: {format_findings(outcome.findings)}. "
-                f"Command: {excerpt} (in {where}). "
-                "Approving applies to this exact command for this session only."
+            _approval_message(
+                "tirith flagged this command.",
+                excerpt,
+                where,
+                format_findings(outcome.findings),
+                "Approving applies to this exact command for this session only.",
             ),
             key(outcome.findings),
         )
@@ -245,9 +279,12 @@ def decide(
     return Decision(
         "approve",
         "error",
-        _cap(
-            f"tirith could not check this command ({reason}). Approve only if you want it to run without a "
-            f"tirith check. Command: {excerpt}."
+        _approval_message(
+            "tirith could not check this command.",
+            excerpt,
+            where,
+            f"Reason: {reason}.",
+            "Approve only if you want it to run without a tirith check.",
         ),
         rule_key(
             "error",

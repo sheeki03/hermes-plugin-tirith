@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from tirith import _scan
+from tirith import _decide, _scan
 from tirith._scan import RunResult, ScanOutcome, child_env, classify, parse_verdict, resolve_cwd, scan
 from tirith._settings import Settings
 
@@ -100,6 +100,53 @@ def test_parse_verdict_takes_the_last_verdict_line():
     assert parse_verdict("") is None
 
 
+@pytest.mark.parametrize("action,rc", [("allow", 0), ("warn", 2)])
+def test_policy_approval_reaches_the_gate_before_warning_filters(action, rc):
+    value = verdict(
+        action,
+        [("lookalike_tld", "MEDIUM", "Lookalike TLD")],
+        requires_approval=True,
+        approval_rule="lookalike_tld",
+    )
+    outcome = classify(RunResult(rc=rc, stdout=_out(value)))
+    settings = Settings(
+        min_severity="CRITICAL",
+        ignore_rules=frozenset({"lookalike_tld"}),
+        fail_closed=False,
+    )
+    directive = _decide.decide(outcome, settings, command="curl https://release.zip/x", cwd="/srv/project").directive()
+    assert directive["action"] == "approve"
+    assert "lookalike_tld" in directive["message"]
+
+
+@pytest.mark.parametrize("invalid", [None, "false", 0, []])
+def test_invalid_approval_contract_cannot_produce_an_allow(invalid):
+    value = verdict("allow")
+    value["requires_approval"] = invalid
+    outcome = classify(RunResult(rc=0, stdout=_out(value)))
+    directive = _decide.decide(outcome, Settings(), command="git status", cwd="/srv/project").directive()
+    assert directive["action"] == "approve"
+
+
+def test_missing_approval_contract_does_not_downgrade_a_critical_block():
+    value = verdict("block", [("metadata_endpoint", "CRITICAL", "Metadata access")])
+    value.pop("requires_approval")
+    outcome = classify(RunResult(rc=1, stdout=_out(value)))
+    directive = _decide.decide(
+        outcome, Settings(fail_closed=False), command="curl http://169.254.169.254/", cwd="/srv/project"
+    ).directive()
+    assert directive["action"] == "block"
+
+
+@pytest.mark.parametrize("stdout", [b"", b"not json", _out({"action": "warn_ack", "findings": []})])
+def test_known_acknowledgement_cannot_fail_open_when_metadata_is_damaged(stdout):
+    outcome = classify(RunResult(rc=3, stdout=stdout))
+    decision = _decide.decide(
+        outcome, Settings(fail_closed=False), command="curl https://release.zip/x", cwd="/srv/project"
+    )
+    assert decision.directive()["action"] == "approve"
+
+
 # --- environment ----------------------------------------------------------------------
 
 
@@ -108,7 +155,6 @@ def test_child_env_strips_and_adds():
     env = child_env(Settings(), session_id="abc", base=base)
     assert "TIRITH" not in env and "TIRITH_DEFER" not in env and "TIRITH_INTERACTIVE" not in env
     assert env["TIRITH_INTEGRATION"] == "hermes"
-    assert env["TIRITH_INTEGRATION_VERSION"] == "0.1.0"
     assert env["TIRITH_OFFLINE"] == "0"  # offline off: the user's own value is left alone
     assert env["PATH"] == "/bin"
     assert re.fullmatch(r"[A-Za-z0-9_-]{1,128}", env["TIRITH_SESSION_ID"])
@@ -130,7 +176,6 @@ def test_session_ids():
     c = child_env(Settings(), task_id="s1", base={})["TIRITH_SESSION_ID"]
     assert a != b and a == c
     assert child_env(Settings(), session_id="\udcff\n../x", base={})["TIRITH_SESSION_ID"].startswith("hermes-")
-    assert len(child_env(Settings(), base={})["TIRITH_SESSION_ID"]) == 39
 
 
 # --- working directory ------------------------------------------------------------------

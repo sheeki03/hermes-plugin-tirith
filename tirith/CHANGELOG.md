@@ -23,3 +23,8 @@ First release.
 - Approvals cover one command, in one directory, with one set of findings. For blocks and failed checks,
   "Always" lasts only for the current session.
 - Needs tirith 0.5.0 or later and Hermes 0.21.5 or later. Never downloads or updates tirith.
+- Public JSON approval requirements, strict-warning acknowledgement and known WarnAck exits are enforced before warning filters or checker fail-open. Unsupported approval metadata is not an allow.
+- Background calls reserve state before scanning. Overlapping writes, partial-delivery IO errors and unconfirmed outcomes retain uncertainty; timeout/expiry cannot manufacture delivery. Late refused callbacks and request-scoped provider IDs cannot consume another command.
+- Approval prompts reserve command/CWD space before clipping findings. Required policy confirmations use session-salted approval keys.
+- Corpus reporting separates proposed decisions, warning-only permissions, failed checks and unasserted database-dependent coverage; no corpus payload is executed.
+- Native Hermes compatibility is checked against immutable 0.21.5 canary and 0.21.7 stable sources; publication and catalog submission remain separate.

@@ -31,8 +31,8 @@ _LOCATOR = _locate.Locator()
 # task id -> cwd reported by the last terminal result. No age limit: Hermes reports the cwd only when a
 # command changes it and keeps its own record for the whole session, so this must not expire either.
 _CWD_BY_TASK = _state.BoundedStore(ttl=math.inf)
-_SCANNED = _state.BoundedStore()  # tool_call_id -> command (terminal) or data (process) that was checked
-_WARN_CONTEXT = _state.BoundedStore()  # tool_call_id -> warning text to append to the result
+_SCANNED = _state.BoundedStore()  # scoped hook identity -> checked command/data
+_WARN_CONTEXT = _state.BoundedStore()  # scoped hook identity -> warning context
 _PROCESS_INPUT = _input.ProcessInput()  # background process -> input typed but not run yet
 _FAIL_OPEN_LIMIT = _state.RateLimiter(60.0)
 _TIMEOUT_LIMIT = _state.RateLimiter(60.0)
@@ -165,20 +165,27 @@ def check_process_input(
     return decision, outcome, plan.text
 
 
-def _track_process_input(plan: _input.Plan, tool_call_id: str, directive: dict | None) -> None:
-    """Count the call's keys as typed unless it is refused outright; its result confirms them."""
-    if directive is not None and directive.get("action") == "block":
-        return
-    if tool_call_id:
-        _PROCESS_INPUT.started(tool_call_id, plan.process, plan.keys)
-    else:
-        _PROCESS_INPUT.record(plan.process, plan.keys, confirmed=directive is None)
+def _track_process_input(plan: _input.Plan, input_call_id: object, directive: dict | None) -> None:
+    """Finish the pre reservation; an early terminal post must not be overwritten by it."""
+    permitted = directive is None or directive.get("action") != "block"
+    _PROCESS_INPUT.started(input_call_id, plan.process, plan.keys, permitted=permitted)
 
 
 def _internal_error(command: str, settings: _settings.Settings, task_id: str, session_id: str) -> dict | None:
     outcome = _scan.error_outcome("internal", "the tirith plugin hit an internal error")
     decision = _decide.decide(outcome, settings, command=command, cwd="", session_id=session_id, task_id=task_id)
     return decision.directive()
+
+
+def _hook_call_id(call_id: Any, task_id: Any, session_id: Any, metadata: Mapping[str, Any]) -> tuple[str, ...] | None:
+    if not isinstance(call_id, str) or not call_id:
+        return None
+    # Providers may reuse a tool-call id in later responses or delegated tasks.
+    # Hermes carries these same scope fields through pre, post and transform.
+    return tuple(
+        value if isinstance(value, str) else ""
+        for value in (session_id, task_id, metadata.get("turn_id"), metadata.get("api_request_id"), call_id)
+    )
 
 
 def _on_pre_tool_call(
@@ -196,7 +203,8 @@ def _on_pre_tool_call(
     settings = _settings.Settings()  # defaults (fail closed) until the user's settings are read
     command = ""
     plan: _input.Plan | None = None
-    call_id = tool_call_id if isinstance(tool_call_id, str) else ""
+    call_id = _hook_call_id(tool_call_id, task_id, session_id, _kwargs)
+    input_call_id = call_id if call_id is not None else object()
     try:
         if tool_name in TERMINAL_TOOLS:
             found = terminal_command(args)
@@ -216,7 +224,7 @@ def _on_pre_tool_call(
         if plan is not None:
             if not settings.scan_process_input:
                 return None
-            plan = _PROCESS_INPUT.plan(plan.process, found, eof=_input.ends_input(args)) or plan
+            plan = _PROCESS_INPUT.plan(plan.process, found, eof=_input.ends_input(args), call_id=input_call_id) or plan
             command = plan.text
         _double_scan_check()
         task_id = task_id if isinstance(task_id, str) else ""
@@ -236,14 +244,14 @@ def _on_pre_tool_call(
         _log_decision(decision, outcome, command)
         directive = decision.directive()
         if plan is not None:
-            _track_process_input(plan, call_id, directive)
+            _track_process_input(plan, input_call_id, directive)
         return directive
     except Exception:
         logger.exception("tirith plugin: internal error while checking a %s call", tool_name)
         try:
             directive = _internal_error(command, settings, str(task_id or ""), str(session_id or ""))
             if plan is not None:
-                _track_process_input(plan, call_id, directive)
+                _track_process_input(plan, input_call_id, directive)
             return directive
         except Exception:
             return {"action": "block", "message": "BLOCKED: the tirith plugin failed while checking this command."}
@@ -260,10 +268,10 @@ def _result_cwd(result: Any) -> str | None:
     return cwd if isinstance(cwd, str) and cwd else None
 
 
-def _process_result(args: Any, result: Any, call_id: str, status: Any) -> None:
-    if call_id:
-        keys = _input.keystrokes(args)
-        process = _input.canonical_id(args.get("session_id")) if keys is not None else ""
+def _process_result(args: Any, result: Any, call_id: object | None, status: Any) -> None:
+    keys = _input.keystrokes(args)
+    if call_id and keys is not None:
+        process = _input.canonical_id(args.get("session_id"))
         _PROCESS_INPUT.finished(call_id, _input.was_written(result, status), process, keys)
     for process in _input.finished_processes(args, result):
         _PROCESS_INPUT.forget(process)
@@ -275,6 +283,7 @@ def _on_post_tool_call(
     args: Any = None,
     result: Any = None,
     task_id: str = "",
+    session_id: str = "",
     tool_call_id: str = "",
     status: Any = None,
     **_kwargs: Any,
@@ -282,7 +291,7 @@ def _on_post_tool_call(
     if tool_name not in WATCHED_TOOLS:
         return None
     try:
-        call_id = tool_call_id if isinstance(tool_call_id, str) else ""
+        call_id = _hook_call_id(tool_call_id, task_id, session_id, _kwargs)
         scanned = _SCANNED.pop(call_id) if call_id else None
         if tool_name in PROCESS_TOOLS:
             _process_result(args, result, call_id, status)
@@ -308,13 +317,16 @@ def _on_transform_tool_result(
     *,
     tool_name: str = "",
     result: Any = None,
+    task_id: str = "",
+    session_id: str = "",
     tool_call_id: str = "",
     **_kwargs: Any,
 ) -> str | None:
-    if tool_name not in WATCHED_TOOLS or not isinstance(tool_call_id, str) or not tool_call_id:
+    call_id = _hook_call_id(tool_call_id, task_id, session_id, _kwargs)
+    if tool_name not in WATCHED_TOOLS or call_id is None:
         return None
     try:
-        context = _WARN_CONTEXT.pop(tool_call_id)
+        context = _WARN_CONTEXT.pop(call_id)
         if context and isinstance(result, str):
             return result + context
     except Exception:

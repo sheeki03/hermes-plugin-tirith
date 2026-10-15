@@ -3,8 +3,9 @@ version: 0.1.0
 manifest_version: 2
 api_version: 1
 description: >-
-  Check every terminal command with your installed tirith before it runs. Findings go to
-  Hermes's approval prompt; critical findings are blocked. The plugin never downloads tirith.
+  Check terminal commands with your installed tirith before they run. Blocks and required
+  policy confirmations use Hermes's approval prompt; ordinary warnings are attached to results.
+  Critical blocks are refused by default. The plugin never downloads tirith.
 author: tirith contributors
 license: MIT
 homepage: https://github.com/sheeki03/hermes-plugin-tirith
@@ -60,11 +61,11 @@ config_schema:
     type: str
     default: LOW
     choices: [INFO, LOW, MEDIUM, HIGH, CRITICAL]
-    description: "Warnings below this severity are ignored. Never applies to blocks."
+    description: "Ordinary warnings below this severity are ignored. Never applies to blocks or required policy confirmation."
   ignore_rules:
     type: list
     default: []
-    description: "Rule ids whose warnings are ignored. Never applies to blocks; obfuscation, hidden-text, unanalysable-input, known-malicious, exfiltration and terminal-injection rules cannot be ignored."
+    description: "Rule ids whose ordinary warnings are ignored. Never applies to blocks or required policy confirmation; guarded and CRITICAL findings cannot be ignored."
   scan_process_input:
     type: bool
     default: true

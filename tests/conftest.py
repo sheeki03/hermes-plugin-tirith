@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import os
 import sys
 from pathlib import Path
@@ -29,7 +30,18 @@ class RecordingCtx:
         self.get_config_calls = 0
 
     def register_hook(self, name: str, callback: Any) -> None:
-        self.hooks[name] = callback
+        @functools.wraps(callback)
+        def invoke(**kwargs):
+            ids = {
+                "task_id": "task-1",
+                "session_id": "sess-1",
+                "turn_id": "t",
+                "api_request_id": "r",
+                **kwargs,
+            }
+            return callback(**ids)
+
+        self.hooks[name] = invoke
 
     def get_config(self, key: str, default: Any = None) -> Any:
         self.get_config_calls += 1

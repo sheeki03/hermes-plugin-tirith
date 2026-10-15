@@ -2,10 +2,16 @@
 
 [tirith](https://github.com/sheeki03/tirith) command checking for
 [Hermes Agent](https://github.com/NousResearch/hermes-agent), as an opt-in plugin: before Hermes runs a
-terminal command, the plugin runs your installed `tirith check` on it and sends any finding to Hermes's
-normal approval prompt. Critical findings are refused.
+terminal command, the plugin runs your installed `tirith check`. Blocks and required policy
+confirmations go to Hermes's approval prompt; ordinary warnings are attached to results.
+Critical blocks are refused by default.
 
 **Status: 0.1.0, not released yet.** It needs tirith 0.5.0, which is not released yet.
+
+The implementation is on the candidate branch, not the placeholder default branch.
+The commands below are the release installation path, **after** Tirith 0.5.0 and
+the plugin are published; an unpinned GitHub install is not usable yet. Catalog
+listing is a separate maintainer submission, not automatic Hermes migration.
 
 The plugin itself is in [`tirith/`](tirith/); its [README](tirith/README.md) covers what it does,
 settings, unattended runs, limits and the network and data disclosure. Short version:
@@ -16,7 +22,7 @@ brew install tirith
 # 2. install and enable the plugin
 hermes plugins install sheeki03/hermes-plugin-tirith/tirith
 hermes plugins enable tirith
-# 3. Hermes 0.21.5 and earlier: turn off the built-in check so commands are not checked twice
+# 3. only if your older Hermes build still has its built-in Tirith check
 hermes config set security.tirith_enabled false
 ```
 
@@ -48,6 +54,12 @@ Test groups:
 - **`hermes`**: loads the plugin through a real Hermes (`hermes_cli` importable, for example
   `uv pip install -p .venv -e <hermes-agent checkout>`), runs Hermes's own approval gate end to end, and
   runs `hermes plugins validate` and `hermes plugins doctor`.
+
+The corpus measures proposed scanner/hook decisions, not shell execution.
+Warning-only permissions are not prevention; checker failures and
+database-dependent rows not asserted without intelligence are reported separately.
+CI pins both the 0.21.5 canary and stable 0.21.7 Hermes sources. Local native host
+verification does not certify Windows or a final published plugin artifact.
 
 ```
 .venv/bin/python -m pytest -m hermes
