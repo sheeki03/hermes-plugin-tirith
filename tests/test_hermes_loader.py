@@ -35,6 +35,7 @@ RULES = [
         "rc": 1,
         "verdict": verdict("block", [("metadata_endpoint", "CRITICAL", "Cloud metadata endpoint access")]),
     },
+    {"contains": "warnme", "rc": 2, "verdict": verdict("warn", [("shortened_url", "MEDIUM", "Shortened URL")])},
 ]
 HUMAN_ENV = (
     "HERMES_INTERACTIVE",
@@ -123,6 +124,21 @@ def test_benign_command_proceeds(hermes):
     plugins, configure, _fake, _home = hermes
     configure()
     assert _gate(plugins, "ls -la", "ok1") is None
+
+
+def test_warning_reaches_the_tool_result_through_hermes_hooks(hermes, monkeypatch):
+    # Hermes passes its own call ids to pre_tool_call, post_tool_call and transform_tool_result; the
+    # warning found in pre must reach the result of the same call, and only that call.
+    plugins, configure, _fake, _home = hermes
+    configure()
+    model_tools = pytest.importorskip("model_tools")
+    monkeypatch.setattr(model_tools.registry, "dispatch", lambda name, args, **kw: json.dumps({"output": "stub"}))
+    ids = {"task_id": "t-e2e", "session_id": "s-e2e", "tool_call_id": "call_1", "turn_id": "turn-1"}
+    out = model_tools.handle_function_call("terminal", {"command": "echo warnme"}, api_request_id="req-1", **ids)
+    assert "[tirith] Warning" in out and "shortened_url" in out
+    assert "[tirith]" not in model_tools.handle_function_call(
+        "terminal", {"command": "echo fine"}, api_request_id="req-2", **ids
+    )
 
 
 def test_approvals_off_approves_asks_but_never_refusals(hermes):

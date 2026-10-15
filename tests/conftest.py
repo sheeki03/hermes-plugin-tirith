@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import functools
 import os
 import sys
 from pathlib import Path
@@ -32,18 +31,7 @@ class RecordingCtx:
         self.get_config_calls = 0
 
     def register_hook(self, name: str, callback: Any) -> None:
-        @functools.wraps(callback)
-        def invoke(**kwargs):
-            ids = {
-                "task_id": "task-1",
-                "session_id": "sess-1",
-                "turn_id": "t",
-                "api_request_id": "r",
-                **kwargs,
-            }
-            return callback(**ids)
-
-        self.hooks[name] = invoke
+        self.hooks[name] = callback  # called with exactly the ids a test passes, like Hermes does
 
     def get_config(self, key: str, default: Any = None) -> Any:
         self.get_config_calls += 1
