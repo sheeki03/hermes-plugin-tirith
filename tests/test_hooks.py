@@ -950,6 +950,7 @@ def test_inline_bypass_without_json_fails_closed_as_before(tmp_path, ctx_factory
         ({"default": {"rc": 0, "verdict": verdict("allow"), "sleep": 30}}, "timeout", "did not answer in time"),
         ({"default": {"rc": 2, "stdout": "", "stderr": "error: usage\n"}}, "no_verdict", "without a verdict"),
         ({"default": {"rc": 101, "stdout": "panicked\n"}}, "exit_code", "exited with code 101"),
+        ({"default": {"rc": 3, "stdout": ""}}, "no_verdict", "exited with code 3 without a verdict"),
         ({"default": {"rc": 1, "stdout": "{not json"}}, "no_verdict", "without a verdict"),
     ],
 )

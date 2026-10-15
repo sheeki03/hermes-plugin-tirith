@@ -145,7 +145,12 @@ def test_known_acknowledgement_cannot_fail_open_when_metadata_is_damaged(stdout)
     decision = _decide.decide(
         outcome, Settings(fail_closed=False), command="curl https://release.zip/x", cwd="/srv/project"
     )
-    assert decision.directive()["action"] == "approve"
+    directive = decision.directive()
+    assert directive["action"] == "approve"
+    # still reported as a failed check, not as a policy approval
+    assert directive["message"].startswith("tirith could not check this command.")
+    assert "needs approval" in directive["message"]
+    assert directive["rule_key"].startswith("tirith:error:")
 
 
 # tirith 0.5.0 answers an honoured TIRITH=0 bypass with exit 0 and this envelope.

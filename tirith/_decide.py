@@ -199,7 +199,7 @@ def decide(
     scope: str = "",
 ) -> Decision:
     kind = outcome.kind
-    if (outcome.requires_approval or kind == "warn_ack") and kind != "block":
+    if (outcome.requires_approval or kind == "warn_ack") and kind not in ("block", "error"):
         kind = "approval"
     excerpt = sanitize(command, MAX_EXCERPT)
     where = _display_cwd(cwd)
@@ -280,11 +280,14 @@ def decide(
             key(outcome.findings),
         )
 
-    # error (and anything unexpected): fail closed unless the user turned that off
-    if not settings.fail_closed:
+    # error (and anything unexpected): fail closed unless the user turned that off. A failed check
+    # that tirith marked as needing approval (exit code 3 without a usable verdict) always asks.
+    if not settings.fail_closed and not outcome.requires_approval:
         return Decision("none", "error")
     reason = sanitize(outcome.reason or "unknown error", 300)
     details = f"Reason: {reason}."
+    if outcome.requires_approval:
+        details += " tirith also signalled that this command needs approval."
     if outcome.findings:
         details += f" tirith flagged the text it could check: {format_findings(outcome.findings)}."
     return Decision(

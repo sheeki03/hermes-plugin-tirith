@@ -169,6 +169,17 @@ def test_errors_fail_closed(reason_class):
     assert "Reason: it broke." in directive["message"]
 
 
+@pytest.mark.parametrize("warn_action", ["allow", "approve", "block"])
+def test_failed_check_that_needs_approval_stays_a_failed_check(warn_action):
+    outcome = ScanOutcome(kind="error", reason="no verdict", reason_class="no_verdict", rc=3, requires_approval=True)
+    settings = Settings(fail_closed=False, warn_action=warn_action)
+    directive = decide(outcome, settings, command=CMD, cwd=CWD, session_id="s").directive()
+    assert directive["action"] == "approve"
+    assert directive["rule_key"].startswith("tirith:error:no_verdict:")
+    assert directive["message"].startswith("tirith could not check this command.")
+    assert "Reason: no verdict." in directive["message"]
+
+
 def test_errors_with_fail_closed_off_run():
     assert run("error", reason="x", reason_class="timeout", settings=Settings(fail_closed=False)).directive() is None
 
