@@ -1174,6 +1174,82 @@ def test_workdir_wins_and_is_not_recorded(hooks, fake, tmp_path):
     assert not os.path.samefile(scans(fake)[-1]["cwd"], work)
 
 
+# --- Hermes Desktop terminal-approval batching ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command,moves",
+    [
+        ("cd /srv/app", True),
+        ("make && cd build", True),
+        ("(cd x; make)", True),
+        ("pushd x", True),
+        ("popd", True),
+        ("source env.sh", True),
+        (". ./env.sh", True),
+        ("if true; then cd /; fi", True),
+        ("builtin cd /tmp", True),
+        ("echo $(cd x && pwd)", True),
+        ("ls .", False),
+        ("git add .", False),
+        ("find . -name x", False),
+        ("echo cd", False),
+        ("cdk deploy", False),
+        ("./configure", False),
+        ("abcd x", False),
+    ],
+)
+def test_directory_changing_commands_are_recognised(command, moves):
+    assert bool(plugin._DIRECTORY_CHANGE.search(command)) is moves
+
+
+def test_batched_command_after_a_pending_cd_fails_closed(hooks, fake, tmp_path):
+    # Hermes Desktop runs pre_tool_call for adjacent terminal calls before the earlier ones run.
+    _ctx, registered = hooks
+    project = tmp_path / "project"
+    project.mkdir()
+    assert pre(registered, f"cd {project}", call_id="b1") is None
+    directive = pre(registered, "make deploy", call_id="b2")
+    assert directive["action"] == "approve" and directive["rule_key"].startswith("tirith:error:cwd_pending:")
+    assert "make deploy" in directive["message"] and "can change directory" in directive["message"]
+    assert scans(fake)[-1]["stdin"] == b"make deploy"  # still checked, in the directory known now
+    flagged = pre(registered, ATTACK, call_id="b3")
+    assert flagged["rule_key"].startswith("tirith:error:cwd_pending:") and "curl_pipe_shell" in flagged["message"]
+    assert pre(registered, METADATA, call_id="b4")["action"] == "block"
+    # once the cd has run, Hermes reports the directory and later commands are checked there
+    post_hook(
+        registered,
+        tool_name="terminal",
+        args={"command": f"cd {project}"},
+        result=json.dumps({"output": "", "cwd": str(project)}),
+        tool_call_id="b1",
+    )
+    assert pre(registered, "make deploy", call_id="b5") is None
+    assert os.path.samefile(scans(fake)[-1]["cwd"], project)
+
+
+def test_batched_commands_without_a_directory_change_run(hooks):
+    _ctx, registered = hooks
+    for index, command in enumerate(("ls -la", "git status", "cat README.md", "git add .")):
+        assert pre(registered, command, call_id=f"b{index}") is None
+
+
+def test_pending_cd_elsewhere_does_not_matter(hooks, tmp_path):
+    _ctx, registered = hooks
+    assert pre(registered, "cd /tmp", call_id="other-task", task="task-2") is None
+    assert pre(registered, "cd sub", call_id="own-workdir", workdir=str(tmp_path)) is None  # moves nothing
+    assert pre(registered, "git status", call_id="later") is None
+    assert pre(registered, "cd /tmp", call_id="b1") is None
+    assert pre(registered, "ls", call_id="pinned", workdir=str(tmp_path)) is None  # its own directory
+
+
+def test_pending_cd_with_fail_closed_off_leaves_the_check(ctx_factory, fake):
+    _ctx, registered = ctx_factory(path=fake, fail_closed=False)
+    assert pre(registered, "cd /tmp", call_id="b1") is None
+    assert pre(registered, "git status", call_id="b2") is None
+    assert pre(registered, ATTACK, call_id="b3")["rule_key"].startswith("tirith:block:")
+
+
 def test_rewritten_command_is_reported(hooks, caplog):
     _ctx, registered = hooks
     pre(registered, "git status", call_id="r1")

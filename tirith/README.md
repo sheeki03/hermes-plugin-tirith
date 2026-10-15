@@ -165,6 +165,12 @@ Hermes 0.21.4 and earlier are not supported: there a crashing or slow plugin let
   directory. The plugin uses the call's `workdir`, else the directory the task's last `cd` moved to (as
   reported in the command result), else `TERMINAL_CWD`, else Hermes's own directory. For remote and
   container backends this is approximate, and their commands are checked too.
+- Hermes Desktop asks about adjacent terminal commands together: it checks all of them before the
+  first one runs, so a later command is checked before an earlier `cd` has moved the directory. When
+  an earlier command of the same task that has not run yet contains `cd`, `pushd`, `popd`, `source`
+  or `.`, a later command without an absolute `workdir` is still checked in the directory known so
+  far and then asks (refused in unattended runs): its repository policy may not be the one that
+  applies. A directory change inside a function, alias or script with another name is not noticed.
 - Another plugin can change a command after tirith checked it (a `modify` directive). The plugin notices
   afterwards and logs a warning; it cannot check the changed command.
 - `execute_code` (Python) and file-writing tools are not checked; tirith checks shell commands.

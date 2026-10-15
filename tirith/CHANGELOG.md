@@ -10,6 +10,9 @@ First release.
   a shell run a line typed without Enter) checks everything typed so far.
 - The working directory reported after a `cd` is kept for the whole session (Hermes reports it only when
   it changes), so later commands are checked in the directory Hermes runs them in.
+- Hermes Desktop checks adjacent terminal commands before the earlier ones run. A later command whose
+  directory an earlier, not yet run `cd` (or `pushd`, `popd`, `source`, `.`) may change is checked and
+  then asks, since its directory, and so its repository policy, is not known yet.
 - Background terminal input is checked as the terminal will run it: text typed over several calls, or a
   command continued over several lines, is checked as a whole, and input with control keys (Tab, Esc,
   Ctrl keys, NUL), which a terminal can treat as editing keys, fails closed.

@@ -56,6 +56,11 @@ class BoundedStore:
                 return default
             return entry[1]
 
+    def values(self) -> list[Any]:
+        with self._lock:
+            self._expire(self._clock())
+            return [value for _stamp, value in self._data.values()]
+
     def clear(self) -> None:
         with self._lock:
             self._data.clear()

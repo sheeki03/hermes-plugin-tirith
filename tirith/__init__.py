@@ -12,6 +12,8 @@ import importlib.util
 import json
 import logging
 import math
+import os
+import re
 import sys
 from collections.abc import Mapping
 from typing import Any
@@ -34,6 +36,7 @@ _CWD_BY_TASK = _state.BoundedStore(ttl=math.inf)
 _SCANNED = _state.BoundedStore()  # scoped hook identity -> checked command/data
 _WARN_CONTEXT = _state.BoundedStore()  # scoped hook identity -> warning context
 _PROCESS_INPUT = _input.ProcessInput()  # background process -> input typed but not run yet
+_PENDING_TERMINAL = _state.BoundedStore()  # scoped hook identity -> (task id, command) from pre to post
 _FAIL_OPEN_LIMIT = _state.RateLimiter(60.0)
 _TIMEOUT_LIMIT = _state.RateLimiter(60.0)
 
@@ -50,6 +53,7 @@ def _reset_for_tests() -> None:
     _SCANNED.clear()
     _WARN_CONTEXT.clear()
     _PROCESS_INPUT.clear()
+    _PENDING_TERMINAL.clear()
     _FAIL_OPEN_LIMIT.clear()
     _TIMEOUT_LIMIT.clear()
     _settings._reset_warnings_for_tests()
@@ -61,6 +65,36 @@ def terminal_command(args: Any) -> str | None:
         return None
     command = args.get("command")
     return command if isinstance(command, str) and command.strip() else None
+
+
+# A command word that can move the shell to another directory: cd, pushd, popd, or a sourced script.
+# A function or alias that changes directory under another name is not recognised (README, Limits).
+_DIRECTORY_CHANGE = re.compile(
+    r"(?:^|[;&|(){}`!\n]|\b(?:then|do|else|elif|if|while|until|time)\s)"
+    r"\s*(?:(?:builtin|command)\s+)?(?:cd|pushd|popd|source|\.)(?=$|[\s;&|)`])"
+)
+_CWD_PENDING = (
+    "cwd_pending",
+    "an earlier terminal command that can change directory has not run yet, so the directory this "
+    "command will run in is not known",
+)
+
+
+def _absolute_workdir(args: Any) -> bool:
+    workdir = args.get("workdir") if isinstance(args, Mapping) else None
+    return isinstance(workdir, str) and bool(workdir.strip()) and os.path.isabs(os.path.expanduser(workdir.strip()))
+
+
+def _directory_in_doubt(args: Any, task_id: str) -> bool:
+    """Whether an earlier terminal command of this task may move the directory before this one runs.
+
+    Hermes runs terminal commands one at a time, but Hermes Desktop's terminal-approval batching
+    runs ``pre_tool_call`` for adjacent terminal calls before the earlier ones run, so the
+    directory a ``cd`` in an earlier call moves to is not known yet.
+    """
+    if _absolute_workdir(args):
+        return False
+    return any(task == task_id and _DIRECTORY_CHANGE.search(command) for task, command in _PENDING_TERMINAL.values())
 
 
 def _double_scan_check() -> None:
@@ -145,6 +179,36 @@ def check_command(
     return decision, outcome, cwd
 
 
+def _fail_closed_after_check(
+    checked: tuple[_decide.Decision, _scan.ScanOutcome] | None,
+    error: tuple[str, str],
+    settings: _settings.Settings,
+    *,
+    command: str,
+    args: Mapping[str, Any] | None,
+    task_id: str,
+    session_id: str,
+    scope: str = "",
+) -> tuple[_decide.Decision, _scan.ScanOutcome]:
+    """Something the check depends on is unknown (``error``), but the text was checked as well.
+
+    A refusal stands; otherwise this is a failed check whose prompt lists the findings. With
+    ``fail_closed`` off, the check is all there is.
+    """
+    findings: tuple[_scan.Finding, ...] = ()
+    if checked is not None:
+        decision, outcome = checked
+        if decision.action == "block" or (not settings.fail_closed and outcome.kind != "error"):
+            return decision, outcome
+        findings = outcome.findings
+    failed = _scan.error_outcome(*error, findings=findings)
+    cwd = _scan.resolve_cwd(args, _CWD_BY_TASK.get(task_id))
+    decision = _decide.decide(
+        failed, settings, command=command, cwd=cwd, session_id=session_id, task_id=task_id, scope=scope
+    )
+    return decision, failed
+
+
 def check_process_input(
     plan: _input.Plan,
     settings: _settings.Settings,
@@ -164,18 +228,21 @@ def check_process_input(
             return _decide.Decision("none", "allow"), _scan.ScanOutcome(kind="allow"), plan.text  # nothing runs yet
         decision, outcome, _cwd = check_command(plan.scan, settings, args=args, task_id=task_id, session_id=session_id)
         return decision, outcome, plan.scan
-    findings: tuple[_scan.Finding, ...] = ()
+    checked = None
     if plan.scan is not None:
         decision, outcome, _cwd = check_command(plan.scan, settings, args=args, task_id=task_id, session_id=session_id)
-        if decision.action == "block" or (not settings.fail_closed and outcome.kind != "error"):
-            return decision, outcome, plan.scan
-        findings = outcome.findings
-    outcome = _scan.error_outcome(*plan.error, findings=findings)
-    cwd = _scan.resolve_cwd(args, _CWD_BY_TASK.get(task_id))
-    decision = _decide.decide(
-        outcome, settings, command=plan.text, cwd=cwd, session_id=session_id, task_id=task_id, scope=plan.process
+        checked = (decision, outcome)
+    decision, outcome = _fail_closed_after_check(
+        checked,
+        plan.error,
+        settings,
+        command=plan.text,
+        args=args,
+        task_id=task_id,
+        session_id=session_id,
+        scope=plan.process,
     )
-    return decision, outcome, plan.text
+    return decision, outcome, plan.scan if outcome.kind != "error" and plan.scan is not None else plan.text
 
 
 def _track_process_input(plan: _input.Plan, input_call_id: object, directive: dict | None) -> None:
@@ -218,6 +285,8 @@ def _on_pre_tool_call(
     plan: _input.Plan | None = None
     call_id = _hook_call_id(tool_call_id, task_id, session_id, _kwargs)
     input_call_id = call_id if call_id is not None else object()
+    task_id = task_id if isinstance(task_id, str) else ""
+    session_id = session_id if isinstance(session_id, str) else ""
     try:
         if tool_name in TERMINAL_TOOLS:
             found = terminal_command(args)
@@ -228,6 +297,11 @@ def _on_pre_tool_call(
         if found is None:
             return None
         command = found
+        in_doubt = False
+        if tool_name in TERMINAL_TOOLS:
+            in_doubt = _directory_in_doubt(args, task_id)
+            if call_id and not args.get("workdir"):
+                _PENDING_TERMINAL.set(call_id, (task_id, found))  # until its post_tool_call
         if tool_name in PROCESS_TOOLS:
             process = _input.canonical_id(args.get("session_id"))
             if not process:
@@ -240,12 +314,20 @@ def _on_pre_tool_call(
             plan = _PROCESS_INPUT.plan(plan.process, found, eof=_input.ends_input(args), call_id=input_call_id) or plan
             command = plan.text
         _double_scan_check()
-        task_id = task_id if isinstance(task_id, str) else ""
-        session_id = session_id if isinstance(session_id, str) else ""
         if plan is None:
             decision, outcome, _cwd = check_command(
                 command, settings, args=args, task_id=task_id, session_id=session_id
             )
+            if in_doubt:
+                decision, outcome = _fail_closed_after_check(
+                    (decision, outcome),
+                    _CWD_PENDING,
+                    settings,
+                    command=command,
+                    args=args,
+                    task_id=task_id,
+                    session_id=session_id,
+                )
         else:
             decision, outcome, command = check_process_input(
                 plan, settings, args=args, task_id=task_id, session_id=session_id
@@ -262,7 +344,7 @@ def _on_pre_tool_call(
     except Exception:
         logger.exception("tirith plugin: internal error while checking a %s call", tool_name)
         try:
-            directive = _internal_error(command, settings, str(task_id or ""), str(session_id or ""))
+            directive = _internal_error(command, settings, task_id, session_id)
             if plan is not None:
                 _track_process_input(plan, input_call_id, directive)
             return directive
@@ -306,6 +388,8 @@ def _on_post_tool_call(
     try:
         call_id = _hook_call_id(tool_call_id, task_id, session_id, _kwargs)
         scanned = _SCANNED.pop(call_id) if call_id else None
+        if call_id and tool_name in TERMINAL_TOOLS:
+            _PENDING_TERMINAL.pop(call_id)
         if tool_name in PROCESS_TOOLS:
             _process_result(args, result, call_id, status)
         if not isinstance(args, Mapping):
