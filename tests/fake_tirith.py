@@ -17,6 +17,11 @@ optional raw ``stdout``/``stderr`` and ``sleep`` seconds. Like the real tirith, 
 honours ``TIRITH=0`` (allow) and ``TIRITH_DEFER=1`` (exit 4 for a block) from its
 environment, so tests can prove the plugin strips them.
 
+``config["bypass"]`` models a ``TIRITH=0 `` prefix on the command that your policy honours:
+``"json"`` answers like tirith 0.5.0 (exit 0 and the normal verdict with ``action: allow``,
+``bypass_requested``/``bypass_honored`` true and ``requires_approval`` false), ``"silent"`` like
+older builds (exit 0, nothing on stdout).
+
 The gate's contract check (``CONTRACT_COMMAND`` on stdin) is answered with
 ``config["contract_response"]`` (default: an allow), not with the scan responses, so a test's
 scan answers do not decide whether the gate passes. ``config["drop_fields"]`` removes keys from
@@ -77,6 +82,7 @@ def verdict(
 
 
 ALLOW = {"rc": 0, "verdict": verdict("allow")}
+BYPASS = {"rc": 0, "verdict": verdict("allow", bypass_honored=True)}  # tirith 0.5.0's honoured bypass
 
 
 def make_fake(directory: str, config: dict[str, Any] | None = None, name: str = "tirith") -> str:
@@ -213,8 +219,10 @@ def main(argv: list[str]) -> int:
             break
     response = dict(response)
     action = (response.get("verdict") or {}).get("action")
-    if os.environ.get("TIRITH") == "0":
-        response = {"rc": 0, "verdict": verdict("allow", bypass_honored=True)}
+    if cfg.get("bypass") and text.startswith("TIRITH=0 "):
+        response = {"rc": 0, "stdout": ""} if cfg["bypass"] == "silent" else BYPASS
+    elif os.environ.get("TIRITH") == "0":
+        response = BYPASS
     elif os.environ.get("TIRITH_DEFER") == "1" and action == "block" and response.get("rc") == 1:
         response["rc"] = 4
     return _respond(response, drop)

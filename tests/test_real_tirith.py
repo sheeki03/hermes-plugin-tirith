@@ -171,8 +171,10 @@ def test_hermes_environment_cannot_defer_or_bypass(ctx_factory, monkeypatch, iso
 def test_inline_bypass_still_asks(ctx_factory, isolated_home):
     _user_policy(isolated_home, "allow_bypass_env_noninteractive: true\n")
     directive = hook(ctx_factory, NEW)("TIRITH=0 " + ATTACK)
-    # tirith honours the prefix (user policy); the plugin still asks a person
+    # tirith honours the prefix (user policy); the plugin still asks a person. tirith 0.5.0 says so in
+    # its verdict (a bypass prompt); earlier builds print nothing (a failed check, which also asks).
     assert directive is not None and directive["action"] == "approve"
+    assert directive["rule_key"].startswith(("tirith:bypass:", "tirith:error:no_verdict:")), directive
 
 
 @need_new

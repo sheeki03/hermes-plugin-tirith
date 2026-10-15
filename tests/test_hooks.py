@@ -788,6 +788,29 @@ def test_bypass_honoured_by_policy_still_asks(tmp_path, ctx_factory):
     assert directive["action"] == "approve" and directive["rule_key"].startswith("tirith:bypass:")
 
 
+@pytest.mark.parametrize("fail_closed", [True, False])
+def test_inline_bypass_with_the_0_5_envelope_asks(tmp_path, ctx_factory, fail_closed):
+    fake = make_fake(str(tmp_path / "b"), {"bypass": "json", "rules": [BLOCK_RULE]})
+    _ctx, registered = ctx_factory(path=fake, fail_closed=fail_closed)
+    directive = pre(registered, "TIRITH=0 " + ATTACK)
+    assert directive["action"] == "approve" and directive["rule_key"].startswith("tirith:bypass:")
+    assert "asks tirith to skip its check" in directive["message"]
+    assert pre(registered, ATTACK, call_id="plain")["rule_key"].startswith("tirith:block:")
+
+
+@pytest.mark.parametrize("tool", ["terminal", "process_manage"])
+def test_inline_bypass_without_json_fails_closed_as_before(tmp_path, ctx_factory, tool):
+    fake = make_fake(str(tmp_path / "b"), {"bypass": "silent"})
+    _ctx, registered = ctx_factory(path=fake)
+    if tool == "terminal":
+        directive = pre(registered, "TIRITH=0 " + ATTACK)
+    else:
+        directive = pre(registered, tool=tool, action="submit", data="TIRITH=0 " + ATTACK, session_id=PROC)
+    assert directive["action"] == "approve" and directive["rule_key"].startswith("tirith:error:no_verdict:")
+    _ctx, unchecked = ctx_factory(path=fake, fail_closed=False)
+    assert pre(unchecked, "TIRITH=0 " + ATTACK, call_id="open") is None
+
+
 # --- fail-closed paths -----------------------------------------------------------------------
 
 

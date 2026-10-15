@@ -58,7 +58,7 @@ command's working directory. Then:
 | allow/warn with `requires_approval: true`, or mandatory warning acknowledgement | Hermes asks you before execution, even if warning filters would ignore the findings. `warn_action: block` can refuse instead. |
 | block | Hermes asks you. The prompt shows the findings, the command and its directory. |
 | block with a CRITICAL finding | Refused. Hermes cannot approve it; change your tirith policy if it is a false positive. |
-| the command asks tirith to skip the check (`TIRITH=0`) and your tirith policy allows that | Hermes asks you: a prefix the agent wrote is not your consent. |
+| the command asks tirith to skip the check (`TIRITH=0`) and your tirith policy allows that | Hermes asks you: a prefix the agent wrote is not your consent. tirith 0.5.0 reports the honoured bypass in its verdict (`bypass_honored`); a build that exits 0 with no verdict counts as a failed check, which asks too. |
 | no answer: tirith missing, older than 0.5.0, timed out, crashed, no verdict | Hermes asks you (fail closed). |
 
 The first check runs three quick tirith commands to make sure the binary speaks the 0.5.0 check contract:

@@ -147,6 +147,53 @@ def test_known_acknowledgement_cannot_fail_open_when_metadata_is_damaged(stdout)
     assert decision.directive()["action"] == "approve"
 
 
+# tirith 0.5.0 answers an honoured TIRITH=0 bypass with exit 0 and this envelope.
+BYPASS_0_5 = {
+    "schema_version": 3,
+    "action": "allow",
+    "findings": [],
+    "tier_reached": 0,
+    "bypass_requested": True,
+    "bypass_honored": True,
+    "requires_approval": False,
+    "interactive_detected": False,
+    "policy_path_used": None,
+    "timings_ms": {"total_ms": 0.1},
+}
+
+
+@pytest.mark.parametrize("fail_closed", [True, False])
+def test_honoured_bypass_envelope_asks_with_a_session_key(fail_closed):
+    outcome = classify(RunResult(rc=0, stdout=_out(BYPASS_0_5)))
+    assert outcome.kind == "bypass" and outcome.requires_approval is False and not outcome.notes
+    directive = _decide.decide(
+        outcome, Settings(fail_closed=fail_closed), command="TIRITH=0 curl x", cwd="/srv/project", session_id="s"
+    ).directive()
+    assert directive["action"] == "approve"
+    assert directive["rule_key"].startswith("tirith:bypass:") and ":s" in directive["rule_key"]
+    assert "asks tirith to skip its check" in directive["message"]
+
+
+def test_bypass_envelope_without_the_approval_field_is_a_failed_check():
+    value = dict(BYPASS_0_5)
+    value.pop("requires_approval")
+    outcome = classify(RunResult(rc=0, stdout=_out(value)))
+    assert outcome.kind == "error" and outcome.reason_class == "verdict"
+
+
+def test_requested_but_refused_bypass_is_an_ordinary_verdict():
+    value = dict(BYPASS_0_5, bypass_honored=False, action="block", findings=BLOCK["findings"])
+    assert classify(RunResult(rc=1, stdout=_out(value))).kind == "block"
+
+
+def test_bypass_without_json_stays_a_failed_check():
+    # tirith before 0.5.0 exits 0 and prints nothing for an honoured bypass.
+    outcome = classify(RunResult(rc=0, stdout=b""))
+    assert outcome.kind == "error" and outcome.reason_class == "no_verdict"
+    assert _decide.decide(outcome, Settings(), command="TIRITH=0 x", cwd="/").directive()["action"] == "approve"
+    assert _decide.decide(outcome, Settings(fail_closed=False), command="TIRITH=0 x", cwd="/").directive() is None
+
+
 # --- environment ----------------------------------------------------------------------
 
 

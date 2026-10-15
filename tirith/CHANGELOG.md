@@ -22,6 +22,9 @@ First release.
   unknown option (exit code 2, naming the option); any other answer counts as a failed check. It also
   checks one harmless command and requires its verdict to carry a boolean `requires_approval`, so a
   pre-release build without that field is refused as too old instead of failing every check.
+- A `TIRITH=0` prefix that your tirith policy honours still asks you. tirith 0.5.0 answers it with exit 0
+  and its normal verdict (`action: allow`, `bypass_honored: true`, `requires_approval: false`); an answer
+  with no verdict still counts as a failed check.
 - Approvals cover one command, in one directory, with one set of findings. For blocks and failed checks,
   "Always" lasts only for the current session.
 - Needs tirith 0.5.0 or later and Hermes 0.21.5 or later. Never downloads or updates tirith.
