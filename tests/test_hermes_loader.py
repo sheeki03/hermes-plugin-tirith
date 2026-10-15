@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -177,16 +178,23 @@ def test_a_crashing_plugin_still_blocks(hermes, monkeypatch):
 
 
 def test_requires_hermes_floor_is_enforced(hermes):
-    plugins, configure, _fake, home = hermes
-    from hermes_cli.version_info import get_version_info
+    _plugins, configure, _fake, home = hermes
+    # The version Hermes compares requires_hermes with: hermes_cli.__version__ on 0.21.5, the nearest
+    # release tag of a source checkout on later releases (unknown in a checkout without tags, and an
+    # unknown version passes every requires_hermes).
+    from hermes_cli.plugins_manifest import running_hermes_version
 
-    if get_version_info().base_version in (None, "", "unknown"):
-        pytest.skip("this Hermes checkout cannot report its version (shallow clone without tags)")
+    running = running_hermes_version()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", str(running or "")):
+        reason = f"this Hermes cannot report its version ({running!r}); a source checkout needs its tags"
+        if os.environ.get("HERMES_VERSION_REQUIRED"):
+            pytest.fail(reason)
+        pytest.skip(reason)
+    manager = configure()
+    assert manager._plugins["tirith"].enabled, f"requires_hermes refuses Hermes {running}"
     manifest_path = home / "plugins" / "tirith" / "plugin.yaml"
-    manifest_path.write_text(
-        manifest_path.read_text(encoding="utf-8").replace('requires_hermes: ">=0.21.5"', 'requires_hermes: ">=99.0"'),
-        encoding="utf-8",
-    )
+    text = manifest_path.read_text(encoding="utf-8")
+    manifest_path.write_text(re.sub(r"requires_hermes: .*", 'requires_hermes: ">=99.0"', text), encoding="utf-8")
     manager = configure()
     loaded = manager._plugins.get("tirith")
     assert loaded is None or not loaded.enabled or loaded.error

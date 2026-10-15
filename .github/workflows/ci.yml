@@ -85,11 +85,17 @@ jobs:
           ref: ${{ matrix.host.ref }}
           path: hermes-agent
           persist-credentials: false
+          # A source checkout takes its version from the release tags in its history. Without them
+          # Hermes reports "unknown", which passes every requires_hermes, and the floor test cannot run.
+          fetch-depth: 0
+          filter: tree:0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
       - run: python -m pip install -e ./hermes-agent pytest==9.1.1 pyyaml==6.0.3
       - name: Loader, approval gate, validate and doctor tests
+        env:
+          HERMES_VERSION_REQUIRED: "1"  # the requires_hermes floor test fails instead of skipping
         run: python -m pytest -m hermes
       - name: hermes plugins validate --install-deps
         shell: bash
