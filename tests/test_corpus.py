@@ -67,16 +67,14 @@ def test_corpus(ctx_factory, tmp_path, monkeypatch):
     for row in CORPUS:
         for attempt in range(1, ATTEMPTS + 1):
             call_id = f"corpus-{row['id']}-{attempt}"
-            directive = registered["pre_tool_call"](
-                tool_name="terminal",
-                args={"command": row["cmd"]},
-                task_id="corpus",
-                session_id="corpus",
-                tool_call_id=call_id,
-            )
-            context = registered["transform_tool_result"](
-                tool_name="terminal", result="", task_id="corpus", session_id="corpus", tool_call_id=call_id
-            )
+            ids = {"task_id": "corpus", "session_id": "corpus", "tool_call_id": call_id}
+            args = {"command": row["cmd"]}
+            directive = registered["pre_tool_call"](tool_name="terminal", args=args, **ids)
+            # Hermes follows every call with post_tool_call (status "blocked" if it did not run), then
+            # transform_tool_result. Nothing is executed here.
+            status = "blocked" if directive else "ok"
+            registered["post_tool_call"](tool_name="terminal", args=args, result="{}", status=status, **ids)
+            context = registered["transform_tool_result"](tool_name="terminal", result="", **ids)
             outcome = captured[-1]
             if not _timed_out(outcome):
                 break
