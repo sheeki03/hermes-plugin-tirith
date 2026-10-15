@@ -305,7 +305,7 @@ def test_process_exit_retires_its_outstanding_pre():
     assert store.plan("proc_aaaa", "echo safe\n").scan == "echo safe"
 
 
-def test_call_capacity_does_not_evict_unconfirmed_input_into_allow():
+def test_call_capacity_refuses_only_the_call_that_cannot_be_tracked():
     store = ProcessInput(max_calls=2)
     store.record("proc_aaaa", "typed command")
     store.started("a", "proc_aaaa", "\n")
@@ -316,18 +316,47 @@ def test_call_capacity_does_not_evict_unconfirmed_input_into_allow():
     assert store.pending("proc_aaaa") == "typed command"
     store.finished("a", False)
     store.finished("b", False)
-    assert store.plan("proc_aaaa", "\n").error[0] == "too_many"
+    store.finished("c", True, "proc_cccc", "echo safe\n")  # it ran anyway, untracked: its process is unknown
+    assert store.plan("proc_aaaa", "\n").scan == "typed command"
+    assert store.plan("proc_cccc", "\n").error[0] == "unconfirmed"
+    assert store.plan("proc_dddd", "echo safe\n", call_id="d").scan == "echo safe"
 
 
-def test_unmatched_completion_capacity_stays_fail_closed():
+def test_dropped_tombstone_affects_only_its_process():
     store = ProcessInput(max_calls=2)
     store.record("proc_aaaa", "typed command")
     for call_id in ("a", "b", "c"):
         store.finished(call_id, False, "proc_aaaa", "\n")
     assert len(store._finished) <= 2
-    store.started("a", "proc_aaaa", "\n")  # its tombstone was compacted, but capacity remains unknown
+    store.started("a", "proc_aaaa", "\n")  # its tombstone was dropped: a late pre registers it again
+    store.finished("a", True, "proc_aaaa", "\n")  # and a stray post cannot clear the typed command
     assert store.pending("proc_aaaa") == "typed command"
-    assert store.plan("proc_aaaa", "\n").error[0] == "too_many"
+    assert store.plan("proc_aaaa", "\n").error[0] == "unconfirmed"
+    assert store.plan("proc_bbbb", "echo safe\n", call_id="d").scan == "echo safe"
+
+
+def test_unmatched_posts_for_idle_processes_leave_no_lasting_state():
+    # scan_process_input off: every post comes without a pre
+    store = ProcessInput(max_calls=2)
+    for index in range(20):
+        store.finished(f"p{index}", False, f"proc_{index:04x}", "\n")
+    assert not store._unknown and not store._pending and len(store._finished) <= 2
+    assert store.plan("proc_0001", "echo safe\n", call_id="new").scan == "echo safe"
+
+
+def test_process_capacity_applies_per_new_process_and_recovers():
+    store = ProcessInput(max_processes=2)
+    store.record("proc_aaaa", "a")
+    store.record("proc_bbbb", "b")
+    assert store.plan("proc_cccc", "c").error[0] == "too_many"
+    assert store.plan("proc_aaaa", "more").error is None  # a process that already has an entry
+    assert store.plan("proc_cccc", "echo ok\n").scan == "echo ok"  # input that leaves nothing unfinished
+    store.record("proc_cccc", "c")  # sent anyway (approved): still tracked
+    assert store.pending("proc_cccc") == "c"
+    assert store.plan("proc_dddd", "d").error[0] == "too_many"
+    store.forget("proc_aaaa")
+    store.forget("proc_cccc")
+    assert store.plan("proc_dddd", "d", call_id="d").error is None
 
 
 def test_ordinary_completed_calls_can_retire_without_capacity_failure():

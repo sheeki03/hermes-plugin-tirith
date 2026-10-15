@@ -32,9 +32,9 @@ INPUT_ACTIONS = frozenset({"write", "submit", "close"})
 EOF_ACTIONS = frozenset({"close"})  # end of input: the typed text runs as it is
 INTERRUPT_KEYS = frozenset("\x03\x04")  # Ctrl-C and Ctrl-D on their own
 MAX_INPUT_BYTES = 1024 * 1024  # the most tirith reads; more fails closed
-MAX_PROCESSES = 1024  # processes with unfinished input; more fails closed
+MAX_PROCESSES = 1024  # processes with unfinished input; input for one more fails closed
 INFLIGHT_TTL = 300.0  # diagnostic age only: never a delivery confirmation
-MAX_CALLS = 4096  # outstanding calls and recent/unmatched completion ids
+MAX_CALLS = 4096  # outstanding calls, and recent/unmatched completion ids; one more call fails closed
 _GONE = frozenset({"exited", "killed", "already_exited"})
 _WORD_BREAKS = " \t\n;&|()<>"
 
@@ -272,8 +272,12 @@ class ProcessInput:
     """Confirmed unfinished input and unresolved calls, guarded by one worker-thread lock.
 
     Calls are reserved before scanning. Overlapping calls settle together: only a single confirmed
-    delivery has a known order. Multiple deliveries, unknown results, or lost tracking capacity
-    leave an explicit fail-closed state, not an invented command. Unconfirmed calls never expire.
+    delivery has a known order. Multiple deliveries or unknown results leave an explicit fail-closed
+    state for that process, not an invented command. Unconfirmed calls never expire.
+
+    Capacity limits apply to the call or process that would need a new entry: its input fails
+    closed, and tracking recovers as calls finish and processes exit. Input that ran anyway (an
+    approved failed check, or ``fail_closed: false``) is still recorded, so the limits are soft.
     """
 
     def __init__(
@@ -292,10 +296,9 @@ class ProcessInput:
         self._pending: OrderedDict[str, str] = OrderedDict()
         self._inflight: OrderedDict[object, _Call] = OrderedDict()
         self._unknown: dict[str, tuple[str, str]] = {}
-        # True means a post arrived before its pre finished (or before it even registered).
-        # These tombstones cannot be evicted into an allow. Ordinary completed pres can.
-        self._finished: OrderedDict[object, bool] = OrderedDict()
-        self._overflow = False
+        # Completed call ids. The value is the process when the post arrived before its pre returned
+        # (or before it even registered): that late pre must not register the call again.
+        self._finished: OrderedDict[object, str | None] = OrderedDict()
         self._lock = threading.Lock()
 
     # -- internals (lock held) --
@@ -304,27 +307,26 @@ class ProcessInput:
     def _matches(a: str, b: str) -> bool:
         return a == b or _related(a, b)
 
-    def _remember_finished(self, call_id: object, awaiting_pre: bool) -> None:
-        previous = self._finished.pop(call_id, False)
+    def _remember_finished(self, call_id: object, awaiting_pre: str | None) -> None:
+        """``awaiting_pre``: the process of a call whose post came before its pre returned."""
+        previous = self._finished.pop(call_id, None)
         self._finished[call_id] = previous or awaiting_pre
         while len(self._finished) > self._max_calls:
-            _old_id, unresolved = self._finished.popitem(last=False)
-            if unresolved:
-                self._overflow = True
+            _old_id, process = self._finished.popitem(last=False)
+            if process and process in self._pending:
+                # Its late pre could now register the call again, and a stray post could then
+                # count it as delivered. Only this process's typed text is at stake.
+                self._mark_unknown(process, ("unconfirmed", "tracking for an earlier input call was dropped"))
 
     def _mark_unknown(self, process: str, error: tuple[str, str]) -> None:
-        names = self._pending.keys() | self._unknown.keys()
-        if process not in names and len(names) >= self._max_processes:
-            self._overflow = True
-            return
         self._unknown.setdefault(process, error)
 
-    def _reserve(self, call_id: object, process: str, keys: str, *, preparing: bool) -> None:
-        if self._overflow or call_id in self._finished or call_id in self._inflight:
-            return
+    def _reserve(self, call_id: object, process: str, keys: str, *, preparing: bool) -> bool:
+        """Track a call from its pre hook. False when the call table is full: the call is not tracked."""
+        if call_id in self._inflight:
+            return True
         if len(self._inflight) >= self._max_calls:
-            self._overflow = True
-            return
+            return False
         overlapping = [entry for entry in self._inflight.values() if self._matches(entry.process, process)]
         group = overlapping[0].group if overlapping else object()
         groups = {entry.group for entry in overlapping}
@@ -335,6 +337,7 @@ class ProcessInput:
         self._inflight[call_id] = _Call(
             process, "" if oversized else keys, self._clock(), group, preparing=preparing, oversized=oversized
         )
+        return True
 
     def _apply(self, process: str, keys: str) -> None:
         if process in self._unknown:
@@ -352,11 +355,7 @@ class ProcessInput:
             return
         after = advance(prior, keys)
         if after:
-            names = self._pending.keys() | self._unknown.keys()
-            if process not in names and len(names) >= self._max_processes:
-                self._overflow = True
-                return
-            self._pending[process] = after
+            self._pending[process] = after  # plan() refuses a new process when full; this ran anyway
         else:
             self._pending.pop(process, None)
 
@@ -404,9 +403,7 @@ class ProcessInput:
             error = None
             outstanding = [entry for entry in self._inflight.values() if self._matches(entry.process, process)]
             names = self._pending.keys() | self._unknown.keys()
-            if self._overflow:
-                error = ("too_many", "background input tracking capacity was exhausted; delivery is unknown")
-            elif call_id is not None and call_id in self._finished:
+            if call_id is not None and call_id in self._finished:
                 error = (
                     "finished",
                     "Hermes already finished this input call; a late pre hook cannot register it again",
@@ -442,10 +439,9 @@ class ProcessInput:
                 error = ("too_large", "the input for this background process is too large to check (over 1 MiB)")
             elif process not in names and len(names) >= self._max_processes and advance(prior, keys):
                 error = ("too_many", "too many background processes have unfinished input")
-            if call_id is not None:
-                self._reserve(call_id, process, keys, preparing=True)
-                if self._overflow:
-                    error = ("too_many", "background input tracking capacity was exhausted; delivery is unknown")
+            if call_id is not None and call_id not in self._finished:
+                if not self._reserve(call_id, process, keys, preparing=True) and error is None:
+                    error = ("too_many", "too many background input calls are unfinished; this one cannot be tracked")
             if error:
                 return Plan(process, keys, text, error=error)
             if not prior and interrupt_only(keys):
@@ -461,16 +457,16 @@ class ProcessInput:
         """The pre hook returned. An earlier terminal post wins over this late registration."""
         with self._lock:
             if call_id in self._finished:
-                self._finished[call_id] = False  # the late pre has now returned; safe to retire this tombstone
+                self._finished[call_id] = None  # the late pre has now returned; safe to retire this tombstone
             else:
                 self._reserve(call_id, process, keys, preparing=False)
             entry = self._inflight.get(call_id)
             if entry is None:
-                return
+                return  # finished already, or not tracked (its post marks the process unknown)
             entry.preparing = False
             if not permitted and not entry.complete:
                 entry.complete, entry.written = True, False
-                self._remember_finished(call_id, False)
+                self._remember_finished(call_id, None)
             self._settle(entry.group)
 
     def finished(self, call_id: object, written: bool | None, process: str = "", keys: str | None = None) -> None:
@@ -479,7 +475,8 @@ class ProcessInput:
             if call_id in self._finished:
                 return  # duplicate posts must not change a blocked/finished call into a delivery
             entry = self._inflight.get(call_id)
-            self._remember_finished(call_id, entry is None or entry.preparing)
+            awaiting = entry is None or entry.preparing
+            self._remember_finished(call_id, (entry.process if entry else process) if awaiting else None)
             if entry is None:
                 if written is not False and process:
                     self._mark_unknown(process, ("unconfirmed", "input was reported without a matching pre hook"))
@@ -503,7 +500,7 @@ class ProcessInput:
             else:
                 text = self._pending.get(process, "") + keys
                 self._mark_unknown(process, ("unconfirmed", "input delivery or its physical order was not confirmed"))
-                if not self._overflow and len(text.encode("utf-8", "surrogatepass")) <= self._max_bytes:
+                if len(text.encode("utf-8", "surrogatepass")) <= self._max_bytes:
                     self._pending[process] = text
 
     def forget(self, process: str) -> None:
@@ -516,7 +513,7 @@ class ProcessInput:
                 if entry.process == process:
                     groups.add(entry.group)
                     del self._inflight[call_id]
-                    self._remember_finished(call_id, entry.preparing)
+                    self._remember_finished(call_id, entry.process if entry.preparing else None)
             for group in groups:
                 self._settle(group)
 
@@ -531,4 +528,3 @@ class ProcessInput:
             self._inflight.clear()
             self._unknown.clear()
             self._finished.clear()
-            self._overflow = False

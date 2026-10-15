@@ -87,8 +87,9 @@ rather than scan an invented line. Elapsed time never confirms delivery or erase
 pending input. A confirmed process exit clears its input state. Turning off
 `fail_closed` intentionally permits these unknown calls unchecked.
 
-Tracking is bounded; losing safety-critical capacity fails closed rather than
-evicting it into permission. Provider call IDs are scoped by session, task,
+Tracking is bounded (1024 processes with unfinished input, 4096 unfinished calls). When it is
+full, input that would need a new entry fails closed for that call only; nothing tracked is
+evicted, and tracking recovers as calls finish and processes exit. Provider call IDs are scoped by session, task,
 turn and API request so a later response can reuse an ID without consuming an
 earlier call's pending input. Long finding text is clipped after reserving space
 for the sanitized command excerpt and directory in approval prompts.

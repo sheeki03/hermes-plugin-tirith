@@ -476,6 +476,73 @@ def test_too_many_unfinished_processes_fails_closed(hooks, monkeypatch):
     assert send(registered, "submit", "echo ok", "c5", sid="proc_cccccccc") is None
 
 
+def _exited(registered, sid):
+    registered["post_tool_call"](
+        tool_name="process_manage",
+        args={"action": "poll", "session_id": sid},
+        result=json.dumps({"session_id": sid, "status": "exited", "exit_code": 0}),
+        tool_call_id=f"exit-{sid}",
+    )
+
+
+def test_process_capacity_recovers_when_processes_exit(hooks, fake, monkeypatch):
+    _ctx, registered = hooks
+    monkeypatch.setattr(plugin, "_PROCESS_INPUT", _input.ProcessInput(max_processes=2))
+    assert send(registered, "write", "a", "c1", sid="proc_aaaaaaaa") is None
+    assert send(registered, "write", "b", "c2", sid="proc_bbbbbbbb") is None
+    # approved anyway: the text is still tracked, and the next new process is refused
+    assert send(registered, "write", "echo ", "c3", sid="proc_cccccccc")["rule_key"].startswith(
+        "tirith:error:too_many:"
+    )
+    assert send(registered, "submit", "safe", "c4", sid="proc_cccccccc") is None
+    assert scans(fake)[-1]["stdin"] == b"echo safe"
+    assert send(registered, "write", "d", "c5", sid="proc_dddddddd", approve=False)["rule_key"].startswith(
+        "tirith:error:too_many:"
+    )
+    _exited(registered, "proc_aaaaaaaa")
+    assert send(registered, "write", "d", "c6", sid="proc_dddddddd") is None
+    assert plugin._PROCESS_INPUT.pending("proc_dddddddd") == "d"
+
+
+def test_a_full_call_table_refuses_only_new_calls_until_calls_finish(hooks, fake, monkeypatch):
+    _ctx, registered = hooks
+    monkeypatch.setattr(plugin, "_PROCESS_INPUT", _input.ProcessInput(max_calls=2))
+    for call_id, sid in (("a", "proc_aaaaaaaa"), ("b", "proc_bbbbbbbb")):
+        assert pre(registered, tool="process_manage", call_id=call_id, action="write", data="x", session_id=sid) is None
+    args = {"action": "submit", "data": "echo hi", "session_id": "proc_cccccccc"}
+    assert pre(registered, tool="process_manage", call_id="c", **args)["rule_key"].startswith("tirith:error:too_many:")
+    for call_id, sid in (("a", "proc_aaaaaaaa"), ("b", "proc_bbbbbbbb"), ("c", "proc_cccccccc")):
+        data = "echo hi" if call_id == "c" else "x"
+        registered["post_tool_call"](
+            tool_name="process_manage",
+            args={"action": "submit" if call_id == "c" else "write", "data": data, "session_id": sid},
+            result=OK_RESULT,
+            tool_call_id=call_id,
+        )
+    assert send(registered, "submit", "echo safe", "d", sid="proc_dddddddd") is None
+    assert scans(fake)[-1]["stdin"] == b"echo safe"
+    # the untracked call that ran anyway leaves only its own process unknown
+    assert send(registered, "submit", "", "e", sid="proc_cccccccc", approve=False)["rule_key"].startswith(
+        "tirith:error:unconfirmed:"
+    )
+
+
+def test_posts_without_a_pre_do_not_stop_later_checks(ctx_factory, fake, monkeypatch):
+    monkeypatch.setattr(plugin, "_PROCESS_INPUT", _input.ProcessInput(max_calls=4))
+    ctx, registered = ctx_factory(path=fake, scan_process_input=False)
+    for index in range(20):
+        assert send(registered, "submit", "echo hi", f"off-{index}", sid=f"proc_{index:08x}") is None
+    assert scans(fake) == []
+    ctx.config["scan_process_input"] = True
+    assert send(registered, "submit", "echo safe", "on-1", sid="proc_ffffffff") is None
+    assert scans(fake)[-1]["stdin"] == b"echo safe"
+    # a process typed into while checks were off stays unknown until it exits
+    directive = send(registered, "submit", "", "on-2", sid="proc_00000013", approve=False)
+    assert directive["rule_key"].startswith("tirith:error:unconfirmed:")
+    _exited(registered, "proc_00000013")
+    assert send(registered, "submit", "echo again", "on-3", sid="proc_00000013") is None
+
+
 def test_a_finished_process_is_forgotten(hooks):
     _ctx, registered = hooks
     send(registered, "write", "half typed", "c1")
