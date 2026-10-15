@@ -16,6 +16,12 @@ the command) or ``config["default"]``. A response has ``rc``, ``verdict`` (dict 
 optional raw ``stdout``/``stderr`` and ``sleep`` seconds. Like the real tirith, the fake
 honours ``TIRITH=0`` (allow) and ``TIRITH_DEFER=1`` (exit 4 for a block) from its
 environment, so tests can prove the plugin strips them.
+
+The gate's contract check (``CONTRACT_COMMAND`` on stdin) is answered with
+``config["contract_response"]`` (default: an allow), not with the scan responses, so a test's
+scan answers do not decide whether the gate passes. ``config["drop_fields"]`` removes keys from
+every verdict the fake prints (``["requires_approval"]`` is a build from before 0.5.0 that
+already rejects the probe).
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from typing import Any
 KNOWN_FLAGS_WITH_VALUE = {"--shell", "--json-schema", "--format"}
 KNOWN_FLAGS = {"--json", "--non-interactive", "--interactive", "--offline", "--defer", "-q", "--quiet"}
 MAX_STDIN = 1024 * 1024
+CONTRACT_COMMAND = b"echo tirith-hermes-plugin-contract-check\n"  # tirith._locate.CONTRACT_COMMAND
 
 
 def verdict(
@@ -112,11 +119,13 @@ def calls(path: str) -> list[dict[str, Any]]:
 
 
 def scans(path: str) -> list[dict[str, Any]]:
-    """Recorded ``check`` invocations other than the capability probe."""
+    """Recorded ``check`` invocations other than the gate's capability probe and contract check."""
     return [
         row
         for row in calls(path)
-        if row["args"][:1] == ["check"] and "--hermes-plugin-capability-probe" not in row["args"]
+        if row["args"][:1] == ["check"]
+        and "--hermes-plugin-capability-probe" not in row["args"]
+        and row["stdin"] != CONTRACT_COMMAND
     ]
 
 
@@ -129,11 +138,11 @@ def _record(cfg: dict[str, Any], args: list[str], stdin: bytes) -> None:
         handle.write(json.dumps(row) + "\n")
 
 
-def _respond(response: dict[str, Any]) -> int:
+def _respond(response: dict[str, Any], drop: tuple[str, ...] = ()) -> int:
     time.sleep(float(response.get("sleep", 0)))
     out = response.get("stdout")
     if out is None and response.get("verdict") is not None:
-        out = json.dumps(response["verdict"]) + "\n"
+        out = json.dumps({k: v for k, v in response["verdict"].items() if k not in drop}) + "\n"
     if out:
         sys.stdout.write(out)
         sys.stdout.flush()
@@ -193,6 +202,9 @@ def main(argv: list[str]) -> int:
     if len(stdin) > MAX_STDIN:
         sys.stderr.write("tirith: command on stdin exceeds 1 MiB\n")
         return 1
+    drop = tuple(cfg.get("drop_fields") or ())
+    if stdin == CONTRACT_COMMAND:
+        return _respond(cfg.get("contract_response") or ALLOW, drop)
     text = stdin.decode("utf-8", errors="surrogateescape")
     response = cfg["default"]
     for rule in cfg.get("rules", []):
@@ -205,7 +217,7 @@ def main(argv: list[str]) -> int:
         response = {"rc": 0, "verdict": verdict("allow", bypass_honored=True)}
     elif os.environ.get("TIRITH_DEFER") == "1" and action == "block" and response.get("rc") == 1:
         response["rc"] = 4
-    return _respond(response)
+    return _respond(response, drop)
 
 
 if __name__ == "__main__":

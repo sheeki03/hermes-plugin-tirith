@@ -3,7 +3,7 @@
 testpaths = ["tests"]
 addopts = "-ra"
 markers = [
-    "realtirith: needs a real tirith binary (TIRITH_TEST_BIN and/or TIRITH_OLD_BIN)",
+    "realtirith: needs a real tirith binary (TIRITH_TEST_BIN, TIRITH_OLD_BIN and/or TIRITH_NO_APPROVAL_BIN)",
     "hermes: needs an installed hermes-agent (hermes_cli importable)",
 ]
 

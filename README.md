@@ -50,7 +50,8 @@ Test groups:
   hooks, all against the fake tirith.
 - **`realtirith`**: run only when a tirith binary is provided. `TIRITH_TEST_BIN` is a tirith with the
   0.5.0 check contract (scans, policy, corpus); `TIRITH_OLD_BIN` is an older release that the version gate
-  must refuse. `TIRITH_CORPUS_REPORT=<file>` writes the corpus table.
+  must refuse; `TIRITH_NO_APPROVAL_BIN` is a pre-release build whose verdicts lack `requires_approval`,
+  which the gate must refuse too. `TIRITH_CORPUS_REPORT=<file>` writes the corpus table.
 - **`hermes`**: loads the plugin through a real Hermes (`hermes_cli` importable, for example
   `uv pip install -p .venv -e <hermes-agent checkout>`), runs Hermes's own approval gate end to end, and
   runs `hermes plugins validate` and `hermes plugins doctor`.

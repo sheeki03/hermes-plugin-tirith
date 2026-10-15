@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import types
 
 import pytest
 
 import tirith as plugin
 from tirith import _locate
-from tirith._locate import PROBE_FLAG, Locator, candidates, gate
-from tirith._scan import child_env
+from tirith._locate import CONTRACT_COMMAND, PROBE_FLAG, Locator, candidates, gate
+from tirith._scan import CHECK_ARGV, RunResult, child_env
 from tirith._settings import Settings
 
-from fake_tirith import calls, make_fake
+import fake_tirith
+from fake_tirith import calls, make_fake, verdict
 
 POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="POSIX install folders")
 WINDOWS_ONLY = pytest.mark.skipif(os.name != "nt", reason="Windows install folders")
@@ -106,6 +109,77 @@ def test_new_tirith_passes(tmp_path, env):
     fake = make_fake(str(tmp_path / "new"))
     result = gate(fake, env, 5)
     assert result.ok and result.version == "0.5.0" and result.reason == ""
+    (contract,) = [c for c in calls(fake) if c["stdin"] == CONTRACT_COMMAND]
+    assert contract["args"] == list(CHECK_ARGV)
+
+
+def test_fake_answers_the_gates_contract_command():
+    assert fake_tirith.CONTRACT_COMMAND == CONTRACT_COMMAND
+
+
+@pytest.mark.parametrize("version", ["tirith 0.4.2\n", "tirith 0.5.0\n"])
+def test_build_without_the_approval_field_is_refused(tmp_path, env, version):
+    # A build from the pre-release stack: it rejects the probe, but its verdicts have no
+    # requires_approval, so every check would fail. Refused like an older release.
+    fake = make_fake(str(tmp_path / "pre"), {"version_output": version, "drop_fields": ["requires_approval"]})
+    locator = Locator()
+    result = locator.check(fake, env, 5)
+    assert result.status == "too_old"
+    assert "older than 0.5.0" in result.reason and "needs tirith 0.5.0 or newer" in result.reason
+    assert fake in result.reason
+    assert locator.check(fake, env, 5).status == "too_old"
+    assert len(calls(fake)) == 3  # cached: --version, probe, contract check once
+
+
+@pytest.mark.parametrize("value", [None, "false", 0, []])
+def test_approval_field_must_be_a_boolean(tmp_path, env, value):
+    answer = verdict("allow")
+    answer["requires_approval"] = value
+    fake = make_fake(str(tmp_path / "odd"), {"contract_response": {"rc": 0, "verdict": answer}})
+    assert gate(fake, env, 5).status == "too_old"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"rc": 0, "stdout": ""},
+        {"rc": 0, "stdout": "not json\n"},
+        {"rc": 101, "stderr": "thread 'main' panicked\n"},
+    ],
+)
+def test_contract_check_without_a_verdict_is_an_error_and_not_cached(tmp_path, env, answer):
+    fake = make_fake(str(tmp_path / "odd"), {"contract_response": answer})
+    locator = Locator()
+    result = locator.check(fake, env, 5)
+    assert result.status == "error" and "contract check" in result.reason
+    locator.check(fake, env, 5)
+    assert len(calls(fake)) == 6
+
+
+def test_contract_check_timeout_is_an_error(tmp_path, env):
+    fake = make_fake(str(tmp_path / "slow"), {"contract_response": {"rc": 0, "verdict": verdict("allow"), "sleep": 30}})
+    result = gate(fake, env, 1)
+    assert result.status == "error" and "in time" in result.reason
+
+
+def test_gate_steps_share_one_time_budget(tmp_path, env, monkeypatch):
+    seen = []
+
+    def runner(argv, stdin, cwd, run_env, timeout):
+        seen.append(timeout)
+        now[0] += 9.0  # every step answers slowly but within its own limit
+        if argv[1:] == ["--version"]:
+            return RunResult(rc=0, stdout=b"tirith 0.5.0\n")
+        if PROBE_FLAG in argv:
+            return RunResult(rc=2, stderr=f"error: unexpected argument '{PROBE_FLAG}' found".encode())
+        return RunResult(rc=0, stdout=(json.dumps(verdict("allow")) + "\n").encode())
+
+    now = [0.0]
+    monkeypatch.setattr(_locate, "time", types.SimpleNamespace(monotonic=lambda: now[0]))
+    fake = make_fake(str(tmp_path / "b"))
+    assert gate(fake, env, 30, runner=runner).ok
+    assert seen[:2] == [_locate.VERSION_TIMEOUT, _locate.GATE_BUDGET - 9.0]
+    assert sum(seen) <= _locate.GATE_BUDGET + 0.1
 
 
 def test_prerelease_build_with_the_new_contract_passes(tmp_path, env):
@@ -171,11 +245,11 @@ def test_results_are_cached_until_the_binary_changes(tmp_path, env):
     locator = Locator()
     assert locator.check(fake, env, 5).ok
     assert locator.check(fake, env, 5).ok
-    assert len(calls(fake)) == 2  # one --version, one probe
+    assert len(calls(fake)) == 3  # one --version, one probe, one contract check
     with open(fake, "a", encoding="utf-8") as handle:
         handle.write("\n")  # size and mtime change, as after an upgrade
     assert locator.check(fake, env, 5).ok
-    assert len(calls(fake)) == 4
+    assert len(calls(fake)) == 6
 
 
 def test_negative_results_expire(tmp_path, env):

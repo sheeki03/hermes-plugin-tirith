@@ -61,6 +61,12 @@ command's working directory. Then:
 | the command asks tirith to skip the check (`TIRITH=0`) and your tirith policy allows that | Hermes asks you: a prefix the agent wrote is not your consent. |
 | no answer: tirith missing, older than 0.5.0, timed out, crashed, no verdict | Hermes asks you (fail closed). |
 
+The first check runs three quick tirith commands to make sure the binary speaks the 0.5.0 check contract:
+`tirith --version`, `tirith check` with an option no tirith knows (0.5.0 must reject it), and
+`tirith check` on `echo tirith-hermes-plugin-contract-check` (the verdict must say whether the command
+needs approval). A tirith that fails this, including a pre-release build without the approval field,
+counts as older than 0.5.0. The result is kept until the binary changes.
+
 **Background terminals.** `process_manage` sends keystrokes: `write` types text, `submit` types text
 and Enter. The plugin keeps what was typed into each background process and checks the whole line when
 a call ends it, so a line typed over several calls (even by another task) is checked as one. A shell

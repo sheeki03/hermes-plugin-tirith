@@ -18,7 +18,9 @@ import tirith as plugin  # noqa: E402
 
 PLUGIN_DIR = ROOT / "tirith"
 # Test inputs, not tirith settings: kept when the tests clear TIRITH* variables.
-TEST_INPUTS = frozenset({"TIRITH_TEST_BIN", "TIRITH_OLD_BIN", "TIRITH_CORPUS_REPORT", "TIRITH_CORPUS_DATA_HOME"})
+TEST_INPUTS = frozenset(
+    {"TIRITH_TEST_BIN", "TIRITH_OLD_BIN", "TIRITH_NO_APPROVAL_BIN", "TIRITH_CORPUS_REPORT", "TIRITH_CORPUS_DATA_HOME"}
+)
 
 
 class RecordingCtx:

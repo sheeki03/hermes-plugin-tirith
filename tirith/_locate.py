@@ -10,6 +10,11 @@ tirith with the 0.5.0 contract rejects the option with a usage error: exit code 
 verdict, and stderr naming the option (``error: unexpected argument '<option>' found``).
 An older one analyses the text and prints a verdict: refused as too old. Any other answer
 (a crash, another exit code, an error about something else) is not trusted either.
+
+Builds from before the 0.5.0 release can already reject the probe but not yet report
+whether a command needs approval. The gate then checks one harmless command
+(``CONTRACT_COMMAND``) and requires the verdict to carry a boolean ``requires_approval``;
+without it every check would fail, so such a build is refused as too old as well.
 """
 
 from __future__ import annotations
@@ -28,9 +33,12 @@ MIN_TIRITH = (0, 5, 0)
 MIN_TIRITH_TEXT = "0.5.0"
 PROBE_FLAG = "--hermes-plugin-capability-probe"
 USAGE_ERROR_RC = 2  # clap's exit code for a usage error
+CONTRACT_COMMAND = b"echo tirith-hermes-plugin-contract-check\n"
 NEGATIVE_TTL = 60.0
 VERSION_TIMEOUT = 5.0
-PROBE_TIMEOUT = 10.0  # first call: --version + probe + scan must fit Hermes's 30 s hook budget
+PROBE_TIMEOUT = 10.0
+# First call: the gate (--version, probe, contract check) plus the scan must fit Hermes's 30 s hook budget.
+GATE_BUDGET = 15.0
 
 _VERSION_RE = re.compile(r"tirith\s+v?(\d+)\.(\d+)\.(\d+)")
 
@@ -148,36 +156,45 @@ def _parse_version(text: str) -> tuple[tuple[int, int, int] | None, str]:
 Runner = Callable[[list, bytes, str, Mapping[str, str], float], "_scan.RunResult"]
 
 
+def _too_old(path: str, version: str, detail: str) -> GateResult:
+    shown = version or "(unknown version)"
+    return GateResult(
+        "too_old",
+        path=path,
+        version=version,
+        reason=(
+            f"tirith {shown} at {path} is older than {MIN_TIRITH_TEXT}: {detail}; this plugin needs tirith "
+            f"{MIN_TIRITH_TEXT} or newer. Upgrade tirith (for example: brew upgrade tirith)"
+        ),
+    )
+
+
 def gate(path: str, env: Mapping[str, str], timeout: float, runner: Runner | None = None) -> GateResult:
-    """Run ``--version`` and the capability probe against one binary."""
+    """Run ``--version``, the capability probe and the contract check against one binary."""
     run = runner or _scan.run
     if not _executable(path):
         return GateResult("not_found", path=path, reason=f"tirith was not found at {path}")
     cwd = tempfile.gettempdir()
-    version_run = run([path, "--version"], b"", cwd, env, min(VERSION_TIMEOUT, timeout))
+    deadline = time.monotonic() + GATE_BUDGET
+
+    def budget(limit: float) -> float:
+        return max(0.1, min(limit, timeout, deadline - time.monotonic()))
+
+    version_run = run([path, "--version"], b"", cwd, env, budget(VERSION_TIMEOUT))
     if version_run.error:
         return GateResult("error", path=path, reason=f"tirith at {path} could not be started")
     if version_run.timed_out:
         return GateResult("error", path=path, reason=f"tirith at {path} did not answer --version in time")
     parsed, version = _parse_version(version_run.stdout.decode("utf-8", errors="replace"))
 
-    probe = run([path, *_scan.CHECK_ARGV, PROBE_FLAG], b"true\n", cwd, env, min(PROBE_TIMEOUT, timeout))
+    probe = run([path, *_scan.CHECK_ARGV, PROBE_FLAG], b"true\n", cwd, env, budget(PROBE_TIMEOUT))
     if probe.error:
         return GateResult("error", path=path, version=version, reason=f"tirith at {path} could not be started")
     if probe.timed_out:
         return GateResult("error", path=path, version=version, reason=f"tirith at {path} did not answer in time")
     swallowed = probe.rc == 0 or _scan.parse_verdict(probe.stdout.decode("utf-8", errors="replace")) is not None
     if swallowed:
-        shown = version or "(unknown version)"
-        return GateResult(
-            "too_old",
-            path=path,
-            version=version,
-            reason=(
-                f"tirith {shown} at {path} is older than {MIN_TIRITH_TEXT}; older releases can mis-read a "
-                "check request and miss attacks. Upgrade tirith (for example: brew upgrade tirith)"
-            ),
-        )
+        return _too_old(path, version, "it can mis-read a check request and miss attacks")
     rejected = probe.rc == USAGE_ERROR_RC and PROBE_FLAG in probe.stderr.decode("utf-8", errors="replace")
     if not rejected:
         return GateResult(
@@ -189,6 +206,23 @@ def gate(path: str, env: Mapping[str, str], timeout: float, runner: Runner | Non
                 f"(exit code {probe.rc}, expected a usage error for {PROBE_FLAG})"
             ),
         )
+
+    # A real check, as slow as a scan: it may use what is left of the gate's budget.
+    contract = run([path, *_scan.CHECK_ARGV], CONTRACT_COMMAND, cwd, env, budget(timeout))
+    if contract.error:
+        return GateResult("error", path=path, version=version, reason=f"tirith at {path} could not be started")
+    if contract.timed_out:
+        return GateResult("error", path=path, version=version, reason=f"tirith at {path} did not answer in time")
+    verdict = _scan.parse_verdict(contract.stdout.decode("utf-8", errors="replace"))
+    if verdict is None:
+        return GateResult(
+            "error",
+            path=path,
+            version=version,
+            reason=f"tirith at {path} gave no verdict for the plugin's contract check (exit code {contract.rc})",
+        )
+    if not isinstance(verdict.get("requires_approval"), bool):
+        return _too_old(path, version, "its verdicts do not say whether a command needs approval")
     note = ""
     if parsed is not None and parsed < MIN_TIRITH:
         note = f"pre-release build with the {MIN_TIRITH_TEXT} check contract"

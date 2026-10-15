@@ -795,6 +795,11 @@ def test_bypass_honoured_by_policy_still_asks(tmp_path, ctx_factory):
     "config,reason_class,text",
     [
         ({"mode": "old", "version_output": "tirith 0.4.2\n"}, "too_old", "older than 0.5.0"),
+        (
+            {"version_output": "tirith 0.4.2\n", "drop_fields": ["requires_approval"]},
+            "too_old",
+            "needs tirith 0.5.0 or newer",
+        ),
         ({"default": {"rc": 0, "verdict": verdict("allow"), "sleep": 30}}, "timeout", "did not answer in time"),
         ({"default": {"rc": 2, "stdout": "", "stderr": "error: usage\n"}}, "no_verdict", "without a verdict"),
         ({"default": {"rc": 101, "stdout": "panicked\n"}}, "exit_code", "exited with code 101"),
@@ -803,11 +808,28 @@ def test_bypass_honoured_by_policy_still_asks(tmp_path, ctx_factory):
 )
 def test_failures_ask_for_approval(tmp_path, ctx_factory, config, reason_class, text):
     broken = make_fake(str(tmp_path / "x"), config)
-    _ctx, registered = ctx_factory(path=broken, timeout=1)
+    # The timeout also bounds each gate step, so only the timeout case uses a short one.
+    _ctx, registered = ctx_factory(path=broken, timeout=3 if reason_class == "timeout" else 10)
     directive = pre(registered, "git status")
     assert directive["action"] == "approve"
     assert directive["rule_key"].startswith(f"tirith:error:{reason_class}:")
     assert text in directive["message"]
+
+
+@pytest.mark.parametrize("fail_closed", [True, False])
+def test_build_without_the_approval_field_never_reaches_a_scan(tmp_path, ctx_factory, caplog, fail_closed):
+    pre_release = make_fake(str(tmp_path / "pre"), {"drop_fields": ["requires_approval"]})
+    _ctx, registered = ctx_factory(path=pre_release, fail_closed=fail_closed)
+    with caplog.at_level(logging.WARNING):
+        directives = [pre(registered, command, call_id=command) for command in ("git status", "ls -la", "pwd")]
+    if fail_closed:
+        assert all(d["action"] == "approve" and d["rule_key"].startswith("tirith:error:too_old:") for d in directives)
+        assert "needs tirith 0.5.0 or newer" in directives[0]["message"]
+    else:
+        assert directives == [None, None, None]
+    assert scans(pre_release) == []
+    upgrade = [r for r in caplog.records if r.getMessage().startswith(f"tirith plugin: tirith 0.5.0 at {pre_release}")]
+    assert len(upgrade) == 1  # said once, not once per command
 
 
 def test_missing_tirith_asks_for_approval(tmp_path, ctx_factory):
