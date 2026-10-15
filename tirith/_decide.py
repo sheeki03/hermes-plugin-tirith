@@ -115,12 +115,17 @@ def _approval_message(prefix: str, excerpt: str, where: str, details: str, suffi
     return f"{heading} {details}{ending}"
 
 
-def _digest(kind: str, command: str, cwd: str, findings: Iterable[Finding]) -> str:
-    material = json.dumps(
-        ["tirith/1", kind, command, cwd, sorted([f.rule_id, f.custom_rule_id, f.severity] for f in findings)],
-        ensure_ascii=True,
-        separators=(",", ":"),
-    )
+def _digest(kind: str, command: str, cwd: str, findings: Iterable[Finding], scope: str = "") -> str:
+    parts: list[Any] = [
+        "tirith/1",
+        kind,
+        command,
+        cwd,
+        sorted([f.rule_id, f.custom_rule_id, f.severity] for f in findings),
+    ]
+    if scope:
+        parts.append(scope)
+    material = json.dumps(parts, ensure_ascii=True, separators=(",", ":"))
     return hashlib.sha256(material.encode("ascii")).hexdigest()[:24]
 
 
@@ -138,16 +143,18 @@ def rule_key(
     session_id: str = "",
     task_id: str = "",
     reason_class: str = "",
+    scope: str = "",
 ) -> str:
     """The Hermes approval grain: one command, in one directory, with one finding set.
 
     Keys for policy approvals, blocks, bypass requests and failed checks carry a salt from
     this Hermes process and session, so "Always" for them never outlives the session.
+    ``scope`` narrows a key further (the background process whose input could not be checked).
     """
     if kind == "error":
-        digest = _digest(f"error:{reason_class}", command, cwd, ())
+        digest = _digest(f"error:{reason_class}", command, cwd, findings, scope)
         return f"tirith:error:{reason_class or 'unknown'}:{digest}:s{_salt(session_id, task_id)}"
-    digest = _digest(kind, command, cwd, findings)
+    digest = _digest(kind, command, cwd, findings, scope)
     if kind in SALTED_KINDS:
         return f"tirith:{kind}:{digest}:s{_salt(session_id, task_id)}"
     return f"tirith:{kind}:{digest}"
@@ -189,6 +196,7 @@ def decide(
     cwd: str,
     session_id: str = "",
     task_id: str = "",
+    scope: str = "",
 ) -> Decision:
     kind = outcome.kind
     if (outcome.requires_approval or kind == "warn_ack") and kind != "block":
@@ -276,6 +284,9 @@ def decide(
     if not settings.fail_closed:
         return Decision("none", "error")
     reason = sanitize(outcome.reason or "unknown error", 300)
+    details = f"Reason: {reason}."
+    if outcome.findings:
+        details += f" tirith flagged the text it could check: {format_findings(outcome.findings)}."
     return Decision(
         "approve",
         "error",
@@ -283,15 +294,17 @@ def decide(
             "tirith could not check this command.",
             excerpt,
             where,
-            f"Reason: {reason}.",
+            details,
             "Approve only if you want it to run without a tirith check.",
         ),
         rule_key(
             "error",
             command,
             cwd,
+            outcome.findings,
             session_id=session_id,
             task_id=task_id,
             reason_class=outcome.reason_class or "unknown",
+            scope=scope,
         ),
     )

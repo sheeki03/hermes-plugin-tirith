@@ -12,6 +12,8 @@ plugin the whole text that a call completes.
 Input is committed only once Hermes confirms that the call ran (``post_tool_call``): a refused
 call never reaches the process. An unconfirmed call prevents later input from assuming an order.
 Neither callback order nor elapsed time proves the order or delivery of physical PTY/pipe writes.
+While delivery or order is unknown, the plugin fails closed but still shows and checks its best
+guess of the typed text (the calls in the order they were checked), which can only add findings.
 
 Keys that a terminal treats as editing keys (Tab completion, Ctrl-A, Esc sequences, history recall)
 or that a shell drops (NUL) make the line that runs differ from the text, so such input is reported
@@ -36,6 +38,9 @@ MAX_PROCESSES = 1024  # processes with unfinished input; input for one more fail
 INFLIGHT_TTL = 300.0  # diagnostic age only: never a delivery confirmation
 MAX_CALLS = 4096  # outstanding calls, and recent/unmatched completion ids; one more call fails closed
 _GONE = frozenset({"exited", "killed", "already_exited"})
+# Failed checks where the text is known but not whether (or in what order) it reaches the process:
+# the best-known text is still checked. Control keys mean the text is not what runs, so it is not.
+_GUESSED = frozenset({"unconfirmed", "ambiguous", "too_many"})
 _WORD_BREAKS = " \t\n;&|()<>"
 
 
@@ -45,9 +50,9 @@ class Plan:
 
     process: str  # canonical process id
     keys: str  # what Hermes writes for this call ("" for ``close``)
-    text: str  # unfinished input plus ``keys``: shown when the input cannot be checked
+    text: str  # best-known unfinished input plus ``keys``: shown and keyed when the input cannot be checked
     scan: str | None = None  # complete lines to check now, or None when nothing can run yet
-    error: tuple[str, str] | None = None  # (reason class, reason): fail closed
+    error: tuple[str, str] | None = None  # (reason class, reason): fail closed; ``scan`` only adds findings
 
 
 def canonical_id(raw: Any) -> str:
@@ -256,6 +261,15 @@ def _related(a: str, b: str) -> bool:
     return a != b and (a.startswith(b) or b.startswith(a))
 
 
+def _ready(text: str, eof: bool) -> str | None:
+    """What a shell would run from ``text`` now: complete lines, or everything at end of input."""
+    normalised = text.replace("\r\n", "\n")
+    if not eof:
+        end = normalised.rfind("\n")
+        normalised = normalised[:end] if end >= 0 else ""
+    return normalised if has_text(normalised) else None
+
+
 @dataclass
 class _Call:
     process: str
@@ -296,6 +310,7 @@ class ProcessInput:
         self._pending: OrderedDict[str, str] = OrderedDict()
         self._inflight: OrderedDict[object, _Call] = OrderedDict()
         self._unknown: dict[str, tuple[str, str]] = {}
+        self._guess: dict[str, str] = {}  # unknown process -> best guess of its unfinished text
         # Completed call ids. The value is the process when the post arrived before its pre returned
         # (or before it even registered): that late pre must not register the call again.
         self._finished: OrderedDict[object, str | None] = OrderedDict()
@@ -318,8 +333,12 @@ class ProcessInput:
                 # count it as delivered. Only this process's typed text is at stake.
                 self._mark_unknown(process, ("unconfirmed", "tracking for an earlier input call was dropped"))
 
-    def _mark_unknown(self, process: str, error: tuple[str, str]) -> None:
+    def _mark_unknown(self, process: str, error: tuple[str, str], keys: str = "") -> None:
+        """Delivery or order is unknown: fail closed, guessing that ``keys`` arrived after the rest."""
         self._unknown.setdefault(process, error)
+        guess = self._guess.get(process, self._pending.get(process, ""))
+        guess = advance(guess, keys) if keys else guess
+        self._guess[process] = guess if len(guess.encode("utf-8", "surrogatepass")) <= self._max_bytes else ""
 
     def _reserve(self, call_id: object, process: str, keys: str, *, preparing: bool) -> bool:
         """Track a call from its pre hook. False when the call table is full: the call is not tracked."""
@@ -341,11 +360,13 @@ class ProcessInput:
 
     def _apply(self, process: str, keys: str) -> None:
         if process in self._unknown:
+            self._mark_unknown(process, self._unknown[process], keys)
             return
         if any(_related(name, process) for name in self._pending.keys() | self._unknown.keys()):
             self._mark_unknown(
                 process,
                 ("ambiguous", "input under different process ids cannot be put in a confirmed physical order"),
+                keys,
             )
             return
         prior = self._pending.get(process, "")
@@ -377,8 +398,9 @@ class ProcessInput:
                     "the physical write order, so tirith cannot tell what it would run",
                 )
             )
-            for entry in delivered + unknown:
-                self._mark_unknown(entry.process, reason)
+            for _call_id, entry in calls:  # the order the calls were checked in
+                if entry.written is not False:
+                    self._mark_unknown(entry.process, reason, entry.keys)
         elif delivered:
             entry = delivered[0]
             if entry.oversized:
@@ -399,9 +421,13 @@ class ProcessInput:
             return None
         with self._lock:
             prior = self._pending.get(process, "")
-            text = prior + keys
-            error = None
             outstanding = [entry for entry in self._inflight.values() if self._matches(entry.process, process)]
+            if process in self._unknown:
+                known = self._guess.get(process, prior)
+            else:
+                known = prior + "".join(entry.keys for entry in outstanding if entry.process == process)
+            text = known + keys
+            error = None
             names = self._pending.keys() | self._unknown.keys()
             if call_id is not None and call_id in self._finished:
                 error = (
@@ -443,15 +469,11 @@ class ProcessInput:
                 if not self._reserve(call_id, process, keys, preparing=True) and error is None:
                     error = ("too_many", "too many background input calls are unfinished; this one cannot be tracked")
             if error:
-                return Plan(process, keys, text, error=error)
+                scannable = error[0] in _GUESSED and len(text.encode("utf-8", "surrogatepass")) <= self._max_bytes
+                return Plan(process, keys, text, scan=_ready(text, eof) if scannable else None, error=error)
             if not prior and interrupt_only(keys):
                 return Plan(process, keys, text)
-            normalised = text.replace("\r\n", "\n")
-            if eof:
-                return Plan(process, keys, text, scan=normalised if has_text(normalised) else None)
-            end = normalised.rfind("\n")
-            complete = normalised[:end] if end >= 0 else ""
-            return Plan(process, keys, text, scan=complete if has_text(complete) else None)
+            return Plan(process, keys, text, scan=_ready(text, eof))
 
     def started(self, call_id: object, process: str, keys: str, *, permitted: bool = True) -> None:
         """The pre hook returned. An earlier terminal post wins over this late registration."""
@@ -479,13 +501,14 @@ class ProcessInput:
             self._remember_finished(call_id, (entry.process if entry else process) if awaiting else None)
             if entry is None:
                 if written is not False and process:
-                    self._mark_unknown(process, ("unconfirmed", "input was reported without a matching pre hook"))
+                    error = ("unconfirmed", "input was reported without a matching pre hook")
+                    self._mark_unknown(process, error, keys or "")
                 return
             if process and process != entry.process:
                 if written is not False:
                     error = ("ambiguous", "the process id changed after this input was checked")
-                    self._mark_unknown(entry.process, error)
-                    self._mark_unknown(process, error)
+                    self._mark_unknown(entry.process, error)  # settling below adds its keys
+                    self._mark_unknown(process, error, keys or "")
             elif keys is not None and keys != entry.keys and not entry.oversized:
                 entry.oversized = len(keys.encode("utf-8", "surrogatepass")) > self._max_bytes
                 entry.keys = "" if entry.oversized else keys
@@ -499,7 +522,8 @@ class ProcessInput:
                 self._apply(process, keys)
             else:
                 text = self._pending.get(process, "") + keys
-                self._mark_unknown(process, ("unconfirmed", "input delivery or its physical order was not confirmed"))
+                error = ("unconfirmed", "input delivery or its physical order was not confirmed")
+                self._mark_unknown(process, error, keys)
                 if len(text.encode("utf-8", "surrogatepass")) <= self._max_bytes:
                     self._pending[process] = text
 
@@ -508,6 +532,7 @@ class ProcessInput:
         with self._lock:
             self._pending.pop(process, None)
             self._unknown.pop(process, None)
+            self._guess.pop(process, None)
             groups = set()
             for call_id, entry in list(self._inflight.items()):
                 if entry.process == process:
@@ -527,4 +552,5 @@ class ProcessInput:
             self._pending.clear()
             self._inflight.clear()
             self._unknown.clear()
+            self._guess.clear()
             self._finished.clear()

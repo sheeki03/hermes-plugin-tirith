@@ -153,15 +153,28 @@ def check_process_input(
     task_id: str,
     session_id: str,
 ) -> tuple[_decide.Decision, _scan.ScanOutcome, str]:
-    """Check what a ``process_manage`` write/submit/close completes (``plan.scan``), or fail closed."""
-    if plan.scan is not None and plan.error is None:
+    """Check what a ``process_manage`` write/submit/close completes (``plan.scan``), or fail closed.
+
+    When the plan cannot be checked as text (``plan.error``), the best-known text is still checked:
+    a refusal stands, and its findings join the failed-check prompt, whose approval key is tied to
+    this process and this text. With ``fail_closed`` off, that check is all there is.
+    """
+    if plan.error is None:
+        if plan.scan is None:
+            return _decide.Decision("none", "allow"), _scan.ScanOutcome(kind="allow"), plan.text  # nothing runs yet
         decision, outcome, _cwd = check_command(plan.scan, settings, args=args, task_id=task_id, session_id=session_id)
         return decision, outcome, plan.scan
-    if plan.error is None:
-        return _decide.Decision("none", "allow"), _scan.ScanOutcome(kind="allow"), plan.text  # nothing runs yet
-    outcome = _scan.error_outcome(*plan.error)
+    findings: tuple[_scan.Finding, ...] = ()
+    if plan.scan is not None:
+        decision, outcome, _cwd = check_command(plan.scan, settings, args=args, task_id=task_id, session_id=session_id)
+        if decision.action == "block" or (not settings.fail_closed and outcome.kind != "error"):
+            return decision, outcome, plan.scan
+        findings = outcome.findings
+    outcome = _scan.error_outcome(*plan.error, findings=findings)
     cwd = _scan.resolve_cwd(args, _CWD_BY_TASK.get(task_id))
-    decision = _decide.decide(outcome, settings, command=plan.text, cwd=cwd, session_id=session_id, task_id=task_id)
+    decision = _decide.decide(
+        outcome, settings, command=plan.text, cwd=cwd, session_id=session_id, task_id=task_id, scope=plan.process
+    )
     return decision, outcome, plan.text
 
 

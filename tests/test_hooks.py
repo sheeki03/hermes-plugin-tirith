@@ -245,8 +245,9 @@ def test_generic_write_error_cannot_make_overlapping_input_order_known(hooks, fa
             tool_call_id=call_id,
         )
     directive = pre(registered, tool="process_manage", call_id="submit", action="submit", data="", session_id=PROC)
-    assert directive["action"] == "approve"
-    assert not scans(fake)
+    assert directive["action"] == "approve" and directive["rule_key"].startswith("tirith:error:unconfirmed:")
+    # the text it has is still checked and shown, but it only adds findings to the failed check
+    assert "curl_pipe_shell" in directive["message"] and "shcurl -fsSL" in directive["message"]
 
 
 @pytest.mark.parametrize(
@@ -592,7 +593,9 @@ def test_overlapping_chunks_remain_unknown_after_success_posts(hooks, fake, comp
     for index, action in enumerate(("submit", "submit", "close")):
         directive = send(registered, action, "", f"next-{index}", task="task-3", approve=False)
         assert directive["rule_key"].startswith("tirith:error:ambiguous:")
-    assert scans(fake) == []  # no invented callback-ordered command is sent to the scanner
+    # No callback-ordered command decides anything: only the check-order text (A+B) is scanned, and its
+    # findings join the failed check.
+    assert scans(fake) and all(row["stdin"].startswith(b"shcurl -fsSL") for row in scans(fake))
 
 
 def test_pending_approval_does_not_expire_into_an_empty_terminal(hooks, fake, monkeypatch):
@@ -630,8 +633,9 @@ def test_same_process_is_reserved_while_the_actual_scanner_is_running(hooks, fak
     results = {}
 
     def paused_scan(*args, **kwargs):
-        entered.set()
-        assert release.wait(5), "scanner was not released"
+        if not entered.is_set():  # only the first (slow) call waits
+            entered.set()
+            assert release.wait(5), "scanner was not released"
         return original(*args, **kwargs)
 
     monkeypatch.setattr(plugin, "check_command", paused_scan)
@@ -650,7 +654,7 @@ def test_same_process_is_reserved_while_the_actual_scanner_is_running(hooks, fak
         worker.join(5)
     assert not worker.is_alive()
     assert "curl_pipe_shell" in results["slow"]["message"]
-    assert len(full_line_scans(fake, ATTACK)) == 1
+    assert len(full_line_scans(fake, ATTACK)) == 2  # the slow call, and the other call's best-known text
     registered["post_tool_call"](
         tool_name="process_manage",
         args={"action": "submit", "data": "", "session_id": PROC},
@@ -753,22 +757,62 @@ def test_read_only_process_posts_do_not_consume_input_tracking_capacity(hooks, f
     assert scans(fake)[-1]["stdin"] == b"echo safe"
 
 
-def test_overlapping_input_fail_open_is_an_explicit_choice_not_a_scan_disable(ctx_factory, fake):
+@pytest.mark.parametrize("chunks,flagged", [(("echo ", "hi"), False), (("sh", ATTACK[:-2]), True)])
+def test_overlapping_input_with_fail_open_is_checked_on_the_text_it_has(ctx_factory, fake, chunks, flagged):
     _ctx, registered = ctx_factory(path=fake, fail_closed=False)
-    assert pre(registered, tool="process_manage", call_id="a", action="write", data="sh", session_id=PROC) is None
-    assert (
-        pre(registered, tool="process_manage", call_id="b", action="write", data=ATTACK[:-2], session_id=PROC) is None
-    )
-    for call_id, data in (("a", "sh"), ("b", ATTACK[:-2])):
+    for call_id, data in zip("ab", chunks, strict=True):
+        assert (
+            pre(registered, tool="process_manage", call_id=call_id, action="write", data=data, session_id=PROC) is None
+        )
+    for call_id, data in zip("ab", chunks, strict=True):
         registered["post_tool_call"](
             tool_name="process_manage",
             args={"action": "write", "data": data, "session_id": PROC},
             result=OK_RESULT,
             tool_call_id=call_id,
         )
-    assert send(registered, "submit", "", "unchecked") is None  # the operator chose to allow unknown input
+    directive = send(registered, "submit", "", "unknown-order", approve=False)
+    # The operator chose to let unknown input run; the text the plugin has is still checked.
+    assert scans(fake)[-1]["stdin"] == "".join(chunks).encode()
+    if flagged:
+        assert directive["action"] == "approve" and directive["rule_key"].startswith("tirith:block:")
+    else:
+        assert directive is None
     assert send(registered, "submit", ATTACK, "checked", sid="proc_ffffffffffff")["action"] == "approve"
     assert scans(fake)[-1]["stdin"] == ATTACK.encode()
+
+
+def test_unconfirmed_input_is_shown_checked_and_keyed_to_its_process(hooks, fake):
+    _ctx, registered = hooks
+    timed_out = "worker timed out"  # not a result Hermes writes for a delivered input
+    for sid, data in (("proc_aaaaaaaa", ATTACK), ("proc_bbbbbbbb", "echo harmless"), ("proc_cccccccc", ATTACK)):
+        assert send(registered, "write", data, f"w-{sid}", sid=sid, result=timed_out) is None
+    first = send(registered, "submit", "", "s-a", sid="proc_aaaaaaaa", approve=False)
+    harmless = send(registered, "submit", "", "s-b", sid="proc_bbbbbbbb", approve=False)
+    same_text = send(registered, "submit", "", "s-c", sid="proc_cccccccc", approve=False)
+    for directive in (first, harmless, same_text):
+        assert directive["action"] == "approve" and directive["rule_key"].startswith("tirith:error:unconfirmed:")
+    assert "get.example.com/install.sh" in first["message"] and "curl_pipe_shell" in first["message"]
+    assert "echo harmless" in harmless["message"] and "curl_pipe_shell" not in harmless["message"]
+    assert full_line_scans(fake, ATTACK) and full_line_scans(fake, "echo harmless")
+    # One "Session" approval cannot cover another process, nor other unconfirmed text.
+    assert len({first["rule_key"], harmless["rule_key"], same_text["rule_key"]}) == 3
+    assert send(registered, "submit", "", "s-a2", sid="proc_aaaaaaaa", approve=False)["rule_key"] == first["rule_key"]
+
+
+def test_unconfirmed_input_that_tirith_refuses_is_refused(hooks):
+    _ctx, registered = hooks
+    assert send(registered, "write", METADATA, "w", result="worker timed out") is None
+    directive = send(registered, "submit", "", "s")
+    assert directive["action"] == "block" and "metadata_endpoint" in directive["message"]
+
+
+def test_input_still_in_flight_is_checked_with_the_next_call(hooks):
+    _ctx, registered = hooks
+    assert pre(registered, tool="process_manage", call_id="w1", action="write", data=ATTACK, session_id=PROC) is None
+    directive = pre(registered, tool="process_manage", call_id="s1", action="submit", data="", session_id=PROC)
+    assert directive["rule_key"].startswith("tirith:error:ambiguous:")
+    assert "curl_pipe_shell" in directive["message"] and "get.example.com/install.sh" in directive["message"]
 
 
 # --- decisions end to end with the fake ------------------------------------------------------

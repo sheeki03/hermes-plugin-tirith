@@ -206,6 +206,27 @@ def test_error_keys_include_the_reason_class():
     assert a != b
 
 
+def test_error_keys_are_scoped_to_the_process_and_findings():
+    key = rule_key("error", CMD, CWD, session_id="s", reason_class="unconfirmed", scope="proc_a")
+    assert key != rule_key("error", CMD, CWD, session_id="s", reason_class="unconfirmed", scope="proc_b")
+    assert key != rule_key("error", CMD, CWD, [HIGH], session_id="s", reason_class="unconfirmed", scope="proc_a")
+    assert key != rule_key("error", CMD, CWD, session_id="s", reason_class="unconfirmed")
+
+
+def test_unscoped_keys_are_unchanged():
+    # "Always" for warn_action: approve is saved in config.yaml; scoping must not change these keys.
+    assert rule_key("warn", "curl -sI https://web.example.dev", "/srv/project", [MED]) == (
+        "tirith:warn:e6f0196832e13ddafa7444b2"
+    )
+
+
+def test_failed_check_prompt_lists_findings_of_the_text_it_could_check():
+    outcome = ScanOutcome(kind="error", reason="order unknown", reason_class="ambiguous", findings=(HIGH,))
+    directive = decide(outcome, Settings(), command=CMD, cwd=CWD, scope="proc_a").directive()
+    assert directive["action"] == "approve" and "curl_pipe_shell" in directive["message"]
+    assert "order unknown" in directive["message"]
+
+
 def test_approval_keys_distinguish_invalid_unicode_commands():
     assert rule_key("block", "echo \udcff", CWD, [HIGH]) != rule_key("block", "echo \udcfe", CWD, [HIGH])
 

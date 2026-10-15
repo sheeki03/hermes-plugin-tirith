@@ -32,6 +32,10 @@ First release.
 - Background input tracking is bounded per call and per process: when it is full, only input that would
   need a new entry fails closed, and tracking recovers as calls finish and processes exit (it no longer
   stays failed until Hermes restarts).
+- When it is not known whether (or in what order) background input reached the process, the plugin
+  still asks, and now also checks the best-known text (the calls in the order they were checked): a
+  refusal stands, findings are listed in the prompt, the prompt shows that text, and the approval is
+  tied to that process and text. With `fail_closed: false` that check is all there is.
 - Background calls reserve state before scanning. Overlapping writes, partial-delivery IO errors and unconfirmed outcomes retain uncertainty; timeout/expiry cannot manufacture delivery. Late refused callbacks and request-scoped provider IDs cannot consume another command.
 - Approval prompts reserve command/CWD space before clipping findings. Required policy confirmations use session-salted approval keys.
 - Corpus reporting separates proposed decisions, warning-only permissions, failed checks and unasserted database-dependent coverage; no corpus payload is executed.
