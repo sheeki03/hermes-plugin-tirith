@@ -10,6 +10,7 @@ import pytest
 from tirith import _decide, _scan
 from tirith._scan import RunResult, ScanOutcome, child_env, classify, parse_verdict, resolve_cwd, scan
 from tirith._settings import Settings
+from tirith._version import PLUGIN_VERSION
 
 from fake_tirith import calls, make_fake, verdict
 
@@ -202,6 +203,7 @@ def test_child_env_strips_and_adds():
     env = child_env(Settings(), session_id="abc", base=base)
     assert "TIRITH" not in env and "TIRITH_DEFER" not in env and "TIRITH_INTERACTIVE" not in env
     assert env["TIRITH_INTEGRATION"] == "hermes"
+    assert env["TIRITH_INTEGRATION_VERSION"] == PLUGIN_VERSION
     assert env["TIRITH_OFFLINE"] == "0"  # offline off: the user's own value is left alone
     assert env["PATH"] == "/bin"
     assert re.fullmatch(r"[A-Za-z0-9_-]{1,128}", env["TIRITH_SESSION_ID"])
@@ -223,6 +225,7 @@ def test_session_ids():
     c = child_env(Settings(), task_id="s1", base={})["TIRITH_SESSION_ID"]
     assert a != b and a == c
     assert child_env(Settings(), session_id="\udcff\n../x", base={})["TIRITH_SESSION_ID"].startswith("hermes-")
+    assert len(child_env(Settings(), base={})["TIRITH_SESSION_ID"]) == 39
 
 
 # --- working directory ------------------------------------------------------------------

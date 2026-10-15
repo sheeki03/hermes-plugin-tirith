@@ -842,6 +842,19 @@ def test_approval_scope_is_the_command_and_session(hooks):
     assert pre(registered, ATTACK, session="sess-2")["rule_key"] != a
 
 
+def test_bypass_and_failed_check_approvals_are_tied_to_the_session(tmp_path, ctx_factory):
+    _ctx, bypass = ctx_factory(path=make_fake(str(tmp_path / "b"), {"bypass": "json"}))
+    first = pre(bypass, "TIRITH=0 " + ATTACK)["rule_key"]
+    assert first.startswith("tirith:bypass:")
+    assert pre(bypass, "TIRITH=0 " + ATTACK, call_id="again")["rule_key"] == first
+    assert pre(bypass, "TIRITH=0 " + ATTACK, call_id="other", session="sess-2")["rule_key"] != first
+    _ctx, missing = ctx_factory(path=str(tmp_path / "nowhere" / "tirith"))
+    failed = pre(missing, "git status")["rule_key"]
+    assert failed.startswith("tirith:error:not_found:")
+    assert pre(missing, "git status", call_id="again")["rule_key"] == failed
+    assert pre(missing, "git status", call_id="other", session="sess-2")["rule_key"] != failed
+
+
 def test_critical_is_blocked(hooks):
     _ctx, registered = hooks
     directive = pre(registered, METADATA)
