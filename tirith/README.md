@@ -185,7 +185,17 @@ Hermes 0.21.4 and earlier are not supported: there a crashing or slow plugin let
   directory known so far; a refusal there stays a refusal. A directory change inside a function, alias
   or script with another name, or one built from a variable (`$CMD /tmp`, `eval "$x"`), is not noticed.
 - Another plugin can change a command after tirith checked it (a `modify` directive). The plugin notices
-  afterwards and logs a warning; it cannot check the changed command.
+  afterwards and logs a warning; it cannot check the changed command. Another plugin's tool-execution
+  middleware can also replace the command after the check, and that change cannot be noticed at all:
+  Hermes reports the arguments from before the middleware to this plugin. Other plugins are trusted code.
+- Commands tirith allows can switch this guard off. The agent can run, without a prompt from tirith or
+  Hermes, commands that uninstall tirith or put another program at its path (`cp`, `ln -sf` or
+  `chmod +x` on `~/.local/bin/tirith`, `~/.cargo/bin/tirith` and the like), disable the plugin
+  (`hermes plugins disable tirith`) or change Hermes's settings (`hermes config set ...`). The plugin
+  runs whichever program is at the resolved path, and a changed binary is checked again only for the
+  0.5.0 check contract, which a program can imitate: the contract check is not proof that it is
+  tirith. For a hardened setup, set `path` to a tirith the agent cannot write to (for example one
+  owned by root, outside the agent's home), and keep Hermes's configuration out of its reach.
 - `execute_code` (Python) and file-writing tools are not checked; tirith checks shell commands.
 - The plugin checks the text of each line. A background shell can still run something else for it:
   an alias, function or history entry set up earlier, or a script written with a file tool.

@@ -37,6 +37,11 @@ Fixes from the review of 0.1.0:
   its result. With `warn_action: allow`, the first one in a session is now appended with a note on what
   it means, and later ones in that session are left out; every other finding is still appended, and
   with `warn_action: approve` or `block` it still asks or refuses each time.
+- README, Limits: commands tirith allows can switch the guard off (uninstall or replace the binary,
+  `hermes plugins disable tirith`, `hermes config set ...`); the plugin runs whichever program is at the
+  resolved path, and the contract check does not prove it is tirith, so hardened setups should point
+  `path` at a binary the agent cannot write. Another plugin's tool-execution middleware can replace a
+  command after the check without the plugin noticing.
 
 ## 0.1.0 (unreleased)
 
