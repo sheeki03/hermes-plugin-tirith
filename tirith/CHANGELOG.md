@@ -31,6 +31,12 @@ Fixes from the review of 0.1.0:
   5 s, so calls queued behind a broken binary get the answer at once.
 - The `timeout` setting warns above 12 s (it warned above 25 s), and also when it does not fit the hook
   limit Hermes is configured with.
+- tirith 0.5.0 reports `package_lookup_incomplete` (MEDIUM) when its live package lookups cannot finish:
+  with `offline: true` (the plugin sets `TIRITH_OFFLINE=1` only then), out of reach, or nothing cached.
+  That made every `pip install`, `npm install`, `npx`, `cargo add` or `go get` append the same warning to
+  its result. With `warn_action: allow`, the first one in a session is now appended with a note on what
+  it means, and later ones in that session are left out; every other finding is still appended, and
+  with `warn_action: approve` or `block` it still asks or refuses each time.
 
 ## 0.1.0 (unreleased)
 

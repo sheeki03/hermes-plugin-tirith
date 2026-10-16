@@ -24,6 +24,11 @@ MAX_EXCERPT = 200
 MAX_TITLE = 120
 MAX_LISTED = 5
 SALTED_KINDS = frozenset({"approval", "block", "bypass", "error"})
+# Warnings about tirith's own coverage rather than the command, which would otherwise be appended to the
+# result of every package install (offline setting, no cached answer, a lookup service out of reach).
+# With warn_action allow the first one in a session is shown with an explanation; later ones in that
+# session are left out of the appended warning. They still count everywhere else (prompts, blocks).
+SESSION_NOTE_RULES = frozenset({"package_lookup_incomplete"})
 
 _ESCAPED_CATEGORIES = frozenset({"Cc", "Cf", "Co", "Cs", "Cn", "Zl", "Zp"})
 
@@ -35,6 +40,7 @@ class Decision:
     message: str = ""
     rule_key: str = ""
     context: str = ""  # appended to the tool result (warn with warn_action allow)
+    notes: tuple[str, ...] = ()  # SESSION_NOTE_RULES explained in ``context``: shown once it is appended
 
     def directive(self) -> dict[str, Any] | None:
         if self.action == "block":
@@ -190,6 +196,31 @@ def _block_message(findings: tuple[Finding, ...]) -> str:
     )
 
 
+def _session_note(finding: Finding) -> bool:
+    return finding.rule_id in SESSION_NOTE_RULES and not finding.custom_rule_id and finding.severity != "CRITICAL"
+
+
+def _note_text(rule_id: str, settings: _settings.Settings) -> str:
+    cause = "the plugin's offline setting is on" if settings.offline else "it is offline or cannot reach them"
+    return (
+        f"Note: {rule_id} means tirith's live package lookups (OSV.dev, deps.dev) did not finish ({cause}, "
+        "and nothing was cached); that is incomplete verification, not evidence that a package is malicious. "
+        f"Later {rule_id} warnings in this session are not repeated; other warnings still are."
+    )
+
+
+def _warning_context(findings: tuple[Finding, ...], settings: _settings.Settings, noted: frozenset[str]) -> Decision:
+    """The warning appended to the result: a session note is explained once, then left out."""
+    shown = tuple(f for f in findings if not (_session_note(f) and f.rule_id in noted))
+    if not shown:
+        return Decision("none", "warn")
+    notes = tuple(sorted({f.rule_id for f in shown if _session_note(f)}))
+    context = f"\n\n[tirith] Warning about this command (it was allowed): {format_findings(shown)}."
+    for rule_id in notes:
+        context += " " + _note_text(rule_id, settings)
+    return Decision("none", "warn", context=context, notes=notes)
+
+
 def decide(
     outcome: ScanOutcome,
     settings: _settings.Settings,
@@ -199,7 +230,9 @@ def decide(
     session_id: str = "",
     task_id: str = "",
     scope: str = "",
+    noted: frozenset[str] = frozenset(),
 ) -> Decision:
+    """``noted``: the ``SESSION_NOTE_RULES`` already explained to this session's agent."""
     kind = outcome.kind
     if (outcome.requires_approval or kind == "warn_ack") and kind not in ("block", "error"):
         kind = "approval"
@@ -261,8 +294,9 @@ def decide(
                 _approval_message("tirith warns about this command.", excerpt, where, text),
                 key(findings),
             )
-        context = f"\n\n[tirith] Warning about this command (it was allowed): {text}." if settings.warn_context else ""
-        return Decision("none", kind, context=context)
+        if not settings.warn_context:
+            return Decision("none", kind)
+        return _warning_context(findings, settings, noted)
 
     if kind == "block":
         critical = any(f.severity == "CRITICAL" for f in outcome.findings)
@@ -367,4 +401,5 @@ def cwd_pending(
             reason_class="cwd_pending",
         ),
         context=checked.context,
+        notes=checked.notes,
     )

@@ -130,7 +130,7 @@ settings. They are read on every command, so changes apply at once.
 | `block_action` | `approve` | tirith blocks: `approve` asks you, `block` refuses. |
 | `critical_action` | `block` | A CRITICAL finding: `block` refuses, `approve` asks you. |
 | `warn_action` | `allow` | tirith warns: `allow` runs it, `approve` asks you, `block` refuses. |
-| `warn_context` | `true` | With `warn_action: allow`, add tirith's warning to the command result. |
+| `warn_context` | `true` | With `warn_action: allow`, add tirith's warning to the command result. `package_lookup_incomplete` (tirith could not finish its live package lookups: offline, out of reach, nothing cached) is explained the first time in a session and then left out of later results in that session; every other finding is always added. |
 | `min_severity` | `LOW` | Ordinary warnings below this severity (`INFO`, `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`) are ignored. Never applies to blocks or required policy confirmation. |
 | `ignore_rules` | `[]` | Rule ids whose ordinary warnings are ignored. Never applies to blocks or required policy confirmation. Obfuscation, hidden-text, unanalysable-input, known-malicious, exfiltration and terminal-injection rules (the list is `GUARDED_RULES` in `_settings.py`), and every CRITICAL finding, cannot be ignored. |
 | `scan_process_input` | `true` | Also check input sent to background terminals (`process_manage` write/submit/close). |
@@ -209,9 +209,9 @@ requests itself, sends no telemetry, and never installs or updates tirith or any
 local audit log (tagged `hermes`). Unless `offline: true`, it may refresh its signed threat database in
 the background and look up package and URL reputation with OSV.dev, deps.dev, ecosyste.ms, and Google Safe
 Browsing (only if you configured a key), plus any feeds, a running tirith daemon, policy webhooks or a team
-policy server you set up. `offline: true` sets `TIRITH_OFFLINE=1`: checks use only the cached threat
-database, and lookups that need the network are reported as incomplete. Policy webhooks you configured
-still fire.
+policy server you set up. `offline: true` sets `TIRITH_OFFLINE=1` (the plugin sets it only then):
+checks use only the cached threat database, and lookups that need the network are reported as
+incomplete. Policy webhooks you configured still fire.
 
 **Licences.** This plugin is MIT. tirith itself is AGPL-3.0 or commercial; the plugin only runs it as a
 separate program and grants no rights to tirith.

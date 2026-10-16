@@ -68,6 +68,61 @@ def test_warn_block():
     assert directive["message"].startswith("BLOCKED by tirith")
 
 
+# --- package_lookup_incomplete: explained once per session -----------------------------------------
+
+LOOKUP = Finding("package_lookup_incomplete", "MEDIUM", "Package threat intelligence could not be completed")
+
+
+def noted_run(findings, noted=frozenset(), settings=None, kind="warn"):
+    outcome = ScanOutcome(kind=kind, findings=tuple(findings))
+    return decide(outcome, settings or Settings(), command="pip install requests", cwd=CWD, noted=noted)
+
+
+def test_the_first_lookup_warning_of_a_session_is_shown_with_its_note():
+    decision = noted_run([LOOKUP])
+    assert decision.directive() is None and decision.notes == ("package_lookup_incomplete",)
+    assert "[MEDIUM] Package threat intelligence could not be completed (package_lookup_incomplete)" in decision.context
+    assert "not evidence that a package is malicious" in decision.context
+    assert "Later package_lookup_incomplete warnings in this session are not repeated" in decision.context
+    assert "offline or cannot reach them" in decision.context
+    assert "offline setting is on" in noted_run([LOOKUP], settings=Settings(offline=True)).context
+
+
+def test_a_repeated_lookup_warning_is_left_out_once_noted():
+    decision = noted_run([LOOKUP], noted=frozenset({"package_lookup_incomplete"}))
+    assert decision.directive() is None and decision.context == "" and decision.notes == ()
+
+
+def test_other_warnings_are_never_folded():
+    decision = noted_run([LOOKUP, MED], noted=frozenset({"package_lookup_incomplete"}))
+    assert "lookalike_tld" in decision.context and "package_lookup_incomplete" not in decision.context
+    assert decision.notes == ()
+    first = noted_run([LOOKUP, MED])
+    assert "lookalike_tld" in first.context and "package_lookup_incomplete" in first.context
+
+
+@pytest.mark.parametrize(
+    "finding",
+    [
+        Finding("package_lookup_incomplete", "CRITICAL", "raised by policy"),
+        Finding("package_lookup_incomplete", "MEDIUM", "a custom rule", "package_lookup_incomplete"),
+    ],
+)
+def test_critical_or_custom_lookup_findings_are_not_folded(finding):
+    decision = noted_run([finding], noted=frozenset({"package_lookup_incomplete"}))
+    assert decision.context and decision.notes == ()
+
+
+@pytest.mark.parametrize("warn_action", ["approve", "block"])
+def test_folding_only_shortens_the_appended_warning(warn_action):
+    # a person who asked to be asked about warnings is still asked every time
+    noted = frozenset({"package_lookup_incomplete"})
+    directive = noted_run([LOOKUP], noted=noted, settings=Settings(warn_action=warn_action)).directive()
+    assert directive["action"] == warn_action and "package_lookup_incomplete" in directive["message"]
+    blocked = noted_run([LOOKUP], noted=noted, kind="block").directive()
+    assert blocked["action"] == "approve" and "package_lookup_incomplete" in blocked["message"]
+
+
 def test_warn_filtered_by_min_severity():
     assert run("warn", [LOW], Settings(min_severity="MEDIUM")).directive() is None
     assert run("warn", [LOW], Settings(min_severity="MEDIUM")).context == ""

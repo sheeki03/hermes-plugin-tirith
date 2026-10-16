@@ -7,6 +7,9 @@ Benign results are reported, not asserted: the benign target is set by the tirit
 The test runs offline in an empty home, so tirith has no threat database. Rows that tirith can
 only catch with its database are asserted only when TIRITH_CORPUS_DATA_HOME points at an
 XDG data directory that holds one. TIRITH_CORPUS_REPORT=<path> writes the table as Markdown.
+
+Each row is checked in a Hermes session of its own, so no row's decision depends on the rows before
+it. In one real session a package_lookup_incomplete warning is appended only the first time.
 """
 
 from __future__ import annotations
@@ -67,7 +70,7 @@ def test_corpus(ctx_factory, tmp_path, monkeypatch):
     for row in CORPUS:
         for attempt in range(1, ATTEMPTS + 1):
             call_id = f"corpus-{row['id']}-{attempt}"
-            ids = {"task_id": "corpus", "session_id": "corpus", "tool_call_id": call_id}
+            ids = {"task_id": "corpus", "session_id": f"corpus-{row['id']}", "tool_call_id": call_id}
             args = {"command": row["cmd"]}
             directive = registered["pre_tool_call"](tool_name="terminal", args=args, **ids)
             # Hermes follows every call with post_tool_call (status "blocked" if it did not run), then

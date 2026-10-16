@@ -926,6 +926,54 @@ def test_warn_runs_and_the_warning_reaches_the_result_once(hooks):
     assert transform(tool_name="terminal", result='{"output": "ok"}', tool_call_id="w1") is None
 
 
+LOOKUP_FINDING = ("package_lookup_incomplete", "MEDIUM", "Package threat intelligence incomplete")
+LOOKUP_RULE = {"contains": "install", "rc": 2, "verdict": verdict("warn", [LOOKUP_FINDING])}
+
+
+def _run_warned(registered, command, call_id, session="sess-1", transform=True):
+    """pre, then (as Hermes does once the command ran) transform_tool_result; returns the appended text."""
+    assert pre(registered, command, call_id=call_id, session=session) is None
+    if not transform:
+        return None
+    out = transform_hook(registered, tool_name="terminal", result="ok", tool_call_id=call_id, session_id=session)
+    return out[len("ok") :] if out else ""
+
+
+def test_package_lookup_warning_is_explained_once_per_session(tmp_path, ctx_factory):
+    both = {
+        "contains": "web.example.dev",
+        "rc": 2,
+        "verdict": verdict("warn", [LOOKUP_FINDING, ("lookalike_tld", "MEDIUM", "TLD")]),
+    }
+    fake = make_fake(str(tmp_path / "bin"), {"rules": [both, LOOKUP_RULE]})
+    _ctx, registered = ctx_factory(path=fake)
+    first = _run_warned(registered, "pip install requests", "p1")
+    assert "package_lookup_incomplete" in first and "not repeated" in first
+    assert _run_warned(registered, "npm install left-pad", "p2") == ""  # folded: nothing appended
+    assert _run_warned(registered, "cargo install ripgrep", "p3") == ""
+    mixed = _run_warned(registered, "pip install x --index https://web.example.dev", "p4")
+    assert "lookalike_tld" in mixed and "package_lookup_incomplete" not in mixed  # other findings still shown
+    other_session = _run_warned(registered, "pip install requests", "p5", session="sess-2")
+    assert "package_lookup_incomplete" in other_session and "not repeated" in other_session
+
+
+def test_package_lookup_note_counts_only_once_it_reached_the_agent(tmp_path, ctx_factory):
+    fake = make_fake(str(tmp_path / "bin"), {"rules": [LOOKUP_RULE]})
+    _ctx, registered = ctx_factory(path=fake)
+    _run_warned(registered, "pip install requests", "p1", transform=False)  # refused elsewhere: never ran
+    again = _run_warned(registered, "pip install requests", "p2")
+    assert "package_lookup_incomplete" in again and "not repeated" in again
+    assert _run_warned(registered, "pip install requests", "p3") == ""
+
+
+def test_package_lookup_warning_still_asks_when_warnings_ask(tmp_path, ctx_factory):
+    fake = make_fake(str(tmp_path / "bin"), {"rules": [LOOKUP_RULE]})
+    _ctx, registered = ctx_factory(path=fake, warn_action="approve")
+    for call_id in ("p1", "p2"):
+        directive = pre(registered, "pip install requests", call_id=call_id)
+        assert directive["action"] == "approve" and "package_lookup_incomplete" in directive["message"]
+
+
 def test_transform_ignores_non_string_results(hooks):
     _ctx, registered = hooks
     pre(registered, WARNED, call_id="w2")

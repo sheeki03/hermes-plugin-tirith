@@ -45,7 +45,10 @@ _LOCATOR = _locate.Locator()
 CWD_TASKS = 4096
 _CWD_BY_TASK = _state.BoundedStore(max_entries=CWD_TASKS, ttl=math.inf, refresh_on_get=True)
 _SCANNED = _state.BoundedStore()  # scoped hook identity -> checked command/data
-_WARN_CONTEXT = _state.BoundedStore()  # scoped hook identity -> warning context
+_WARN_CONTEXT = _state.BoundedStore()  # scoped hook identity -> (warning context, session, session notes)
+# (session, rule id) -> True once that session's agent was shown the note for a _decide.SESSION_NOTE_RULES
+# warning. Dropping an entry (more than 4096 sessions) only shows the note once more.
+_SESSION_NOTES = _state.BoundedStore(max_entries=4096, ttl=math.inf, refresh_on_get=True)
 _PROCESS_INPUT = _input.ProcessInput()  # background process -> input typed but not run yet
 _PENDING_TERMINAL = _state.BoundedStore()  # scoped hook identity -> (task id, command) from pre to post
 _FAIL_OPEN_LIMIT = _state.RateLimiter(60.0)
@@ -63,6 +66,7 @@ def _reset_for_tests() -> None:
     _CWD_BY_TASK.clear()
     _SCANNED.clear()
     _WARN_CONTEXT.clear()
+    _SESSION_NOTES.clear()
     _PROCESS_INPUT.clear()
     _PENDING_TERMINAL.clear()
     _FAIL_OPEN_LIMIT.clear()
@@ -276,7 +280,11 @@ def check_command(
             timeout=settings.timeout,
             deadline=deadline,
         )
-    decision = _decide.decide(outcome, settings, command=command, cwd=cwd, session_id=session_id, task_id=task_id)
+    scope = session_id or task_id
+    noted = frozenset(rule for rule in _decide.SESSION_NOTE_RULES if _SESSION_NOTES.get((scope, rule)))
+    decision = _decide.decide(
+        outcome, settings, command=command, cwd=cwd, session_id=session_id, task_id=task_id, noted=noted
+    )
     return decision, outcome, cwd
 
 
@@ -434,7 +442,7 @@ def _on_pre_tool_call(
         if call_id:
             _SCANNED.set(call_id, checked)
             if decision.context:
-                _WARN_CONTEXT.set(call_id, decision.context)
+                _WARN_CONTEXT.set(call_id, (decision.context, session_id or task_id, decision.notes))
         _log_decision(decision, outcome, command)
         directive = decision.directive()
         if plan is not None:
@@ -522,8 +530,11 @@ def _on_transform_tool_result(
     if tool_name not in WATCHED_TOOLS or call_id is None:
         return None
     try:
-        context = _WARN_CONTEXT.pop(call_id)
-        if context and isinstance(result, str):
+        entry = _WARN_CONTEXT.pop(call_id)
+        if entry and isinstance(result, str):
+            context, scope, notes = entry
+            for rule in notes:  # the agent has now seen the explanation; later repeats are left out
+                _SESSION_NOTES.set((scope, rule), True)
             return result + context
     except Exception:
         logger.debug("tirith plugin: transform_tool_result failed", exc_info=True)

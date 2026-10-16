@@ -244,6 +244,20 @@ def test_background_input_with_editing_keys_fails_closed(ctx_factory, data):
 
 
 @need_new
+def test_offline_package_lookup_warning_is_explained_once_per_session(ctx_factory):
+    # offline, tirith cannot complete package lookups and warns on every install (package_lookup_incomplete)
+    _ctx, registered = ctx_factory(path=NEW, offline=True, timeout=60)
+    appended = []
+    for index, command in enumerate(["pip install requests", "npx tsc --noEmit", "cargo add serde"]):
+        ids = {"task_id": "task", "session_id": "session", "tool_call_id": f"i{index}"}
+        assert registered["pre_tool_call"](tool_name="terminal", args={"command": command}, **ids) is None
+        registered["post_tool_call"](tool_name="terminal", args={"command": command}, result="{}", **ids)
+        appended.append(registered["transform_tool_result"](tool_name="terminal", result="{}", **ids))
+    assert "package_lookup_incomplete" in appended[0] and "not repeated" in appended[0]
+    assert appended[1:] == [None, None]
+
+
+@need_new
 @pytest.mark.parametrize(
     "command,rule",
     [
