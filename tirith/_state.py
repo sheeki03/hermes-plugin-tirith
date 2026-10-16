@@ -12,15 +12,26 @@ _MISSING = object()
 
 
 class BoundedStore:
-    """A size- and age-bounded mapping (LRU order, TTL per entry) guarded by one lock.
+    """A size- and age-bounded mapping guarded by one lock; the oldest entry goes first.
 
-    Hermes runs parallel tool calls on worker threads, so every access takes the lock.
+    Hermes runs parallel tool calls on worker threads, so every access takes the lock. An entry's
+    age and position count from its last ``set``. With ``refresh_on_get`` a read counts as a use
+    too (LRU): the entry moves to the newest end and its age restarts, so the size bound evicts the
+    entry used longest ago, not one that is still being read.
     """
 
-    def __init__(self, max_entries: int = 512, ttl: float = 600.0, clock: Callable[[], float] = time.monotonic):
+    def __init__(
+        self,
+        max_entries: int = 512,
+        ttl: float = 600.0,
+        clock: Callable[[], float] = time.monotonic,
+        *,
+        refresh_on_get: bool = False,
+    ):
         self._max_entries = max_entries
         self._ttl = ttl
         self._clock = clock
+        self._refresh_on_get = refresh_on_get
         self._data: OrderedDict[Hashable, tuple[float, Any]] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -45,6 +56,9 @@ class BoundedStore:
             entry = self._data.get(key, _MISSING)
             if entry is _MISSING:
                 return default
+            if self._refresh_on_get:
+                self._data[key] = (now, entry[1])
+                self._data.move_to_end(key)
             return entry[1]
 
     def pop(self, key: Hashable, default: Any = None) -> Any:

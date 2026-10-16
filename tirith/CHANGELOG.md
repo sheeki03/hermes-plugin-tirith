@@ -13,6 +13,10 @@ Fixes from the review of 0.1.0:
   `eval cd ...` or `eval "cd ..."`, `command [-p] cd`, or `cd` after `NAME=value` assignments, now counts as a
   possible directory change, like `cd` and `builtin cd` already did, so the later command asks instead of
   being checked silently under the old directory's policy.
+- The directory a task moved to is kept while the task is in use. It was dropped once 512 other tasks
+  had reported a directory change, even if the task was still running commands, which were then checked
+  in `TERMINAL_CWD` or Hermes's own directory under the wrong repository policy. Each check now counts as
+  a use (least recently used goes first) and up to 4096 tasks are remembered.
 
 ## 0.1.0 (unreleased)
 

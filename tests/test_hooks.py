@@ -1177,6 +1177,36 @@ def test_tracked_cwd_does_not_expire(hooks, fake, tmp_path, monkeypatch):
     assert os.path.samefile(scans(fake)[-1]["cwd"], moved)
 
 
+def test_a_task_in_use_keeps_its_cwd_while_many_other_tasks_change_directory(hooks, fake, tmp_path, monkeypatch):
+    # The bound drops the task idle longest, never one that keeps running commands.
+    _ctx, registered = hooks
+    assert plugin.CWD_TASKS >= 4096
+    monkeypatch.setattr(plugin._CWD_BY_TASK, "_max_entries", 3)  # stands for CWD_TASKS
+    moved, elsewhere = tmp_path / "moved", tmp_path / "elsewhere"
+    moved.mkdir()
+    elsewhere.mkdir()
+
+    def report_cd(task, call_id, cwd):
+        pre(registered, f"cd {cwd}", call_id=call_id, task=task)
+        post_hook(
+            registered,
+            tool_name="terminal",
+            args={"command": f"cd {cwd}"},
+            result=json.dumps({"output": "", "cwd": str(cwd)}),
+            task_id=task,
+            tool_call_id=call_id,
+        )
+
+    report_cd("task-1", "c0", moved)
+    for index in range(10):
+        report_cd(f"other-{index}", f"o{index}", elsewhere)
+        pre(registered, "ls", call_id=f"l{index}")  # task-1 is still working
+        assert os.path.samefile(scans(fake)[-1]["cwd"], moved), index
+    # a task that stopped running commands is the one dropped
+    pre(registered, "ls", call_id="idle", task="other-0")
+    assert not os.path.samefile(scans(fake)[-1]["cwd"], elsewhere)
+
+
 def test_workdir_wins_and_is_not_recorded(hooks, fake, tmp_path):
     _ctx, registered = hooks
     work = tmp_path / "work"

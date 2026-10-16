@@ -32,7 +32,10 @@ WATCHED_TOOLS = TERMINAL_TOOLS | PROCESS_TOOLS
 _LOCATOR = _locate.Locator()
 # task id -> cwd reported by the last terminal result. No age limit: Hermes reports the cwd only when a
 # command changes it and keeps its own record for the whole session, so this must not expire either.
-_CWD_BY_TASK = _state.BoundedStore(ttl=math.inf)
+# Every check of a task reads its entry, which keeps it (LRU): only the task idle longest is dropped
+# when more than CWD_TASKS tasks have changed directory.
+CWD_TASKS = 4096
+_CWD_BY_TASK = _state.BoundedStore(max_entries=CWD_TASKS, ttl=math.inf, refresh_on_get=True)
 _SCANNED = _state.BoundedStore()  # scoped hook identity -> checked command/data
 _WARN_CONTEXT = _state.BoundedStore()  # scoped hook identity -> warning context
 _PROCESS_INPUT = _input.ProcessInput()  # background process -> input typed but not run yet
