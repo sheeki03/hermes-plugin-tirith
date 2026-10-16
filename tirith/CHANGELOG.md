@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.1
 
-Fixes from the review of 0.1.0:
+Released: TODO(owner): the date 0.1.1 is published (after tirith 0.5.0 is published).
+
+Fixes from the review of 0.1.0. Needs tirith 0.5.0 or later and Hermes 0.21.5 or later, like 0.1.0.
 
 - Background terminal input is read the way an interactive bash reads it. A command left open by an
   unclosed `$(`, `<(`, `(`, `{`, `${`, `$[` or `[[`, a quote inside `"$(...)"`, a heredoc with any
@@ -63,7 +65,9 @@ Fixes from the review of 0.1.0:
   `path` at a binary the agent cannot write. Another plugin's tool-execution middleware can replace a
   command after the check without the plugin noticing.
 
-## 0.1.0 (unreleased)
+## 0.1.0
+
+Released: TODO(owner): the date tirith 0.5.0 is published.
 
 First release. Needs tirith 0.5.0 or later and Hermes 0.21.5 or later; tested with the Hermes releases
 0.21.5, 0.21.6, 0.21.7, 0.22.0, 0.22.1 and 0.22.2 (on 0.21.5, turn off Hermes's own built-in tirith

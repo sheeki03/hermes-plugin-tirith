@@ -102,7 +102,7 @@ def test_plugin_loads_with_declared_hooks(hermes):
     loaded = manager._plugins["tirith"]
     assert loaded.enabled is True, loaded.error
     assert loaded.error is None
-    assert loaded.manifest.version == "0.1.0"
+    assert loaded.manifest.version == "0.1.1"
     manifest = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8"))
     assert sorted(loaded.hooks_registered) == sorted(manifest["provides_hooks"])
 

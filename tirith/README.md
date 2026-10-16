@@ -14,12 +14,6 @@ Ordinary warnings run with an advisory; critical blocks are refused by default.
 
 ## Install
 
-**Unreleased candidate.** Tirith 0.5.0 and the plugin are not published yet.
-Use these installation commands only after publication and merge of the reviewed
-plugin tree; the current placeholder default branch is not installable.
-Catalog discovery requires a separate reviewed submission. Hermes does not
-promise an automatic migration pointer.
-
 1. Install tirith 0.5.0 or later (this plugin never downloads or updates it):
 
    ```
@@ -32,8 +26,8 @@ promise an automatic migration pointer.
 2. Install and enable the plugin:
 
    ```
-   hermes plugins install tirith                                  # from the catalog, once listed
-   hermes plugins install sheeki03/hermes-plugin-tirith/tirith    # directly from GitHub
+   hermes plugins install tirith                                  # from the Hermes plugin catalog
+   hermes plugins install sheeki03/hermes-plugin-tirith/tirith    # or directly from GitHub
    hermes plugins enable tirith
    ```
 

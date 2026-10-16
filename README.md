@@ -6,12 +6,8 @@ terminal command, the plugin runs your installed `tirith check`. Blocks and requ
 confirmations go to Hermes's approval prompt; ordinary warnings are attached to results.
 Critical blocks are refused by default.
 
-**Status: 0.1.0, not released yet.** It needs tirith 0.5.0, which is not released yet.
-
-The implementation is on the candidate branch, not the placeholder default branch.
-The commands below are the release installation path, **after** Tirith 0.5.0 and
-the plugin are published; an unpinned GitHub install is not usable yet. Catalog
-listing is a separate maintainer submission, not automatic Hermes migration.
+**Version 0.1.1.** Needs tirith 0.5.0 or later and Hermes 0.21.5 or later; see the
+[changelog](tirith/CHANGELOG.md).
 
 The plugin itself is in [`tirith/`](tirith/); its [README](tirith/README.md) covers what it does,
 settings, unattended runs, limits and the network and data disclosure. Short version:
@@ -19,7 +15,7 @@ settings, unattended runs, limits and the network and data disclosure. Short ver
 ```
 # 1. install tirith 0.5.0 or later yourself (the plugin never downloads it)
 brew install tirith
-# 2. install and enable the plugin
+# 2. install and enable the plugin (from the Hermes plugin catalog: hermes plugins install tirith)
 hermes plugins install sheeki03/hermes-plugin-tirith/tirith
 hermes plugins enable tirith
 # 3. Hermes 0.21.5 only: turn off its built-in tirith check so commands are not checked twice
