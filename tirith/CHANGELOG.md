@@ -9,6 +9,10 @@ Fixes from the review of 0.1.0:
   or an open quote. After a person approved an opening line such as `bash -c $(`, `eval $(` or
   `bash <(`, the lines that complete it used to be checked one at a time (each harmless on its own) while
   the shell ran them as one command; they are now checked together with the opening line.
+- Hermes Desktop batches: an earlier, not yet run command spelled `\cd`, `'cd'`, `"cd"`, `c\d`, `$'cd'`,
+  `eval cd ...` or `eval "cd ..."`, `command [-p] cd`, or `cd` after `NAME=value` assignments, now counts as a
+  possible directory change, like `cd` and `builtin cd` already did, so the later command asks instead of
+  being checked silently under the old directory's policy.
 
 ## 0.1.0 (unreleased)
 

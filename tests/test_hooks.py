@@ -1211,17 +1211,40 @@ def test_workdir_wins_and_is_not_recorded(hooks, fake, tmp_path):
         ("if true; then cd /; fi", True),
         ("builtin cd /tmp", True),
         ("echo $(cd x && pwd)", True),
+        # spellings bash also runs as a directory change
+        ("\\cd /tmp", True),
+        ("'cd' /tmp", True),
+        ('"cd" /tmp', True),
+        ("c\\d /tmp", True),
+        ("$'cd' /tmp", True),
+        ("make && \\cd build", True),
+        ("eval cd /tmp", True),
+        ('eval "cd /tmp"', True),
+        ("eval 'pushd /tmp'", True),
+        ("CDPATH=/ cd tmp", True),
+        ("x=1 cd /tmp", True),
+        ('x="a b" cd /tmp', True),
+        ("command cd /tmp", True),
+        ("command -p cd /tmp", True),
+        ("\\builtin cd /tmp", True),
+        ("eval builtin cd /tmp", True),
+        ('"source" env.sh', True),
         ("ls .", False),
         ("git add .", False),
         ("find . -name x", False),
         ("echo cd", False),
+        ('echo "cd"', False),
+        ('git commit -m "cd into the build dir"', False),
+        ("echo eval cd", False),
+        ("x=1 cdk deploy", False),
+        ("CDPATH=/ ls", False),
         ("cdk deploy", False),
         ("./configure", False),
         ("abcd x", False),
     ],
 )
 def test_directory_changing_commands_are_recognised(command, moves):
-    assert bool(plugin._DIRECTORY_CHANGE.search(command)) is moves
+    assert plugin._moves_directory(command) is moves
 
 
 def test_batched_command_after_a_pending_cd_fails_closed(hooks, fake, tmp_path):
@@ -1247,6 +1270,16 @@ def test_batched_command_after_a_pending_cd_fails_closed(hooks, fake, tmp_path):
     )
     assert pre(registered, "make deploy", call_id="b5") is None
     assert os.path.samefile(scans(fake)[-1]["cwd"], project)
+
+
+@pytest.mark.parametrize(
+    "move", ["\\cd {}", "'cd' {}", "c\\d {}", 'eval "cd {}"', "CDPATH=/ cd {}", "command -p cd {}", "builtin cd {}"]
+)
+def test_batched_command_after_a_differently_spelled_cd_asks(hooks, tmp_path, move):
+    _ctx, registered = hooks
+    assert pre(registered, move.format(tmp_path), call_id="b1") is None
+    directive = pre(registered, "make deploy", call_id="b2")
+    assert directive["action"] == "approve" and directive["rule_key"].startswith("tirith:error:cwd_pending:")
 
 
 def test_batched_commands_without_a_directory_change_run(hooks):

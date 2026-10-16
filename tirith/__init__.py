@@ -67,12 +67,28 @@ def terminal_command(args: Any) -> str | None:
     return command if isinstance(command, str) and command.strip() else None
 
 
-# A command word that can move the shell to another directory: cd, pushd, popd, or a sourced script.
-# A function or alias that changes directory under another name is not recognised (README, Limits).
+# A command word that can move the shell to another directory: cd, pushd, popd, or a sourced script,
+# also after NAME=value assignments and the builtin, command [-p] and eval prefixes. It is matched in
+# the text with quotes and backslashes removed, since bash runs 'cd', "cd", \cd, c\d, $'cd' and
+# eval "cd x" as cd too. A function, alias or variable that changes directory under another name is
+# not recognised (README, Limits).
 _DIRECTORY_CHANGE = re.compile(
     r"(?:^|[;&|(){}`!\n]|\b(?:then|do|else|elif|if|while|until|time)\s)"
-    r"\s*(?:(?:builtin|command)\s+)?(?:cd|pushd|popd|source|\.)(?=$|[\s;&|)`])"
+    r"\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
+    r"(?:(?:builtin|command|eval)(?:\s+-\S*)*\s+)*"
+    r"(?:cd|pushd|popd|source|\.)(?=$|[\s;&|)`])"
 )
+_QUOTED_ASSIGNMENT = re.compile(r"""([A-Za-z_][A-Za-z0-9_]*=)(?:'[^']*'|"(?:[^"\\]|\\.)*")+""")
+_DOLLAR_QUOTE = re.compile(r"""\$(?=['"])""")
+_UNQUOTE = str.maketrans("", "", "\\'\"")
+
+
+def _moves_directory(command: str) -> bool:
+    """Whether ``command`` may change the shell's directory (a heuristic; see ``_DIRECTORY_CHANGE``)."""
+    text = _QUOTED_ASSIGNMENT.sub(r"\1x", command)  # ``X="a b" cd``: one assignment
+    return bool(_DIRECTORY_CHANGE.search(_DOLLAR_QUOTE.sub("", text).translate(_UNQUOTE)))
+
+
 _CWD_PENDING = (
     "cwd_pending",
     "an earlier terminal command that can change directory has not run yet, so the directory this "
@@ -94,7 +110,7 @@ def _directory_in_doubt(args: Any, task_id: str) -> bool:
     """
     if _absolute_workdir(args):
         return False
-    return any(task == task_id and _DIRECTORY_CHANGE.search(command) for task, command in _PENDING_TERMINAL.values())
+    return any(task == task_id and _moves_directory(command) for task, command in _PENDING_TERMINAL.values())
 
 
 def _double_scan_check() -> None:
