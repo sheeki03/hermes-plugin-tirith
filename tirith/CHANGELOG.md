@@ -22,6 +22,15 @@ Fixes from the review of 0.1.0:
   directory has not run yet, and shows tirith's verdict in the directory known so far (nothing found, a
   warning, a required policy approval or a finding). A warning stays attached to the result once
   approved. A failed check asks with its own reason, and a refusal still stands.
+- Each hook call now finishes inside Hermes's `plugins.hook_callback_timeout` (read from Hermes; 30 s by
+  default). A slow or hung binary on the first call (startup check plus check, up to about 27 s at the
+  default timeout and 42 s at 25 s) could run past it; Hermes then blocked the call and skipped the
+  plugin for 60 s, which blocked every tool. The startup check of every candidate binary and the check
+  now share one deadline 5 s before the limit, including the time spent waiting for another call's
+  startup check; a check stopped there asks, like any failed check. A failed startup check is kept for
+  5 s, so calls queued behind a broken binary get the answer at once.
+- The `timeout` setting warns above 12 s (it warned above 25 s), and also when it does not fit the hook
+  limit Hermes is configured with.
 
 ## 0.1.0 (unreleased)
 

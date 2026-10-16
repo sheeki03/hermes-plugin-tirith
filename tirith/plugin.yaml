@@ -29,7 +29,7 @@ config_schema:
   timeout:
     type: int
     default: 10
-    description: "Seconds per check (1-60). Keep it below plugins.hook_callback_timeout (30)."
+    description: "Seconds per check (1-60); 12 or less is advised. Each check, and on the first call also tirith's startup check, is stopped 5 s before plugins.hook_callback_timeout (30) and then asks."
   offline:
     type: bool
     default: false

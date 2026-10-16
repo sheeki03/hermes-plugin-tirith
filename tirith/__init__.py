@@ -15,6 +15,7 @@ import math
 import os
 import re
 import sys
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -28,6 +29,13 @@ logger = logging.getLogger(__name__)
 TERMINAL_TOOLS = frozenset({"terminal"})
 PROCESS_TOOLS = frozenset({"process_manage", "process"})
 WATCHED_TOOLS = TERMINAL_TOOLS | PROCESS_TOOLS
+
+# Hermes stops waiting for a pre_tool_call callback after plugins.hook_callback_timeout (30 s by default),
+# blocks the call, and then skips this callback for 60 s, which blocks every tool. Each hook call
+# therefore finishes its gate and check HOOK_MARGIN seconds (at most half the limit) before that limit;
+# a check stopped there asks for approval like any failed check.
+HOOK_LIMIT_DEFAULT = 30.0
+HOOK_MARGIN = 5.0
 
 _LOCATOR = _locate.Locator()
 # task id -> cwd reported by the last terminal result. No age limit: Hermes reports the cwd only when a
@@ -60,6 +68,39 @@ def _reset_for_tests() -> None:
     _FAIL_OPEN_LIMIT.clear()
     _TIMEOUT_LIMIT.clear()
     _settings._reset_warnings_for_tests()
+
+
+def _hook_limit() -> float:
+    """Hermes's ``plugins.hook_callback_timeout`` in seconds (``inf`` when Hermes sets none).
+
+    Read through Hermes only when Hermes has already loaded it, so nothing is imported on our
+    behalf; otherwise, or if that fails, Hermes's default.
+    """
+    resolve = getattr(sys.modules.get("hermes_cli.plugins"), "_resolve_hook_callback_timeout", None)
+    if not callable(resolve):
+        return HOOK_LIMIT_DEFAULT
+    try:
+        limit = float(resolve())
+    except Exception:
+        return HOOK_LIMIT_DEFAULT
+    if math.isnan(limit):
+        return HOOK_LIMIT_DEFAULT
+    return limit if limit > 0 else math.inf  # 0 or less: Hermes runs the callback without a time limit
+
+
+def _hook_budget(limit: float) -> float:
+    """How long one hook call may spend on the gate and the check."""
+    return limit - min(HOOK_MARGIN, limit / 2)
+
+
+def _warn_timeout_budget(timeout: int, limit: float) -> None:
+    longest = _hook_budget(limit) - _scan.KILL_GRACE
+    if timeout > longest:
+        _settings.warn_once(
+            f"tirith plugin: timeout={timeout} s does not fit Hermes's hook time limit "
+            f"(plugins.hook_callback_timeout={limit:g} s): checks are stopped after about {max(longest, 0):.0f} s "
+            "and then ask for approval"
+        )
 
 
 def terminal_command(args: Any) -> str | None:
@@ -180,7 +221,7 @@ def _log_decision(decision: _decide.Decision, outcome: _scan.ScanOutcome, comman
     if outcome.kind == "error":
         if outcome.reason_class == "timeout":
             if _TIMEOUT_LIMIT.allow("timeout"):
-                logger.warning("tirith plugin: tirith did not answer within the timeout setting")
+                logger.warning("tirith plugin: %s", outcome.reason)
         elif outcome.reason_class in ("not_found", "too_old", "spawn"):
             _settings.warn_once(f"tirith plugin: {outcome.reason}")
         if decision.action == "none" and _FAIL_OPEN_LIMIT.allow("fail-open"):
@@ -215,17 +256,25 @@ def check_command(
     args: Mapping[str, Any] | None,
     task_id: str,
     session_id: str,
+    deadline: float | None = None,
 ) -> tuple[_decide.Decision, _scan.ScanOutcome, str]:
+    """Locate and gate tirith, then check ``command``; both end by ``deadline`` (``time.monotonic()``)."""
     cwd = _scan.resolve_cwd(args, _CWD_BY_TASK.get(task_id))
     env = _scan.child_env(settings, session_id=session_id, task_id=task_id)
-    located = _LOCATOR.resolve(settings.path, env, settings.timeout)
+    located = _LOCATOR.resolve(settings.path, env, settings.timeout, deadline)
     if not located.ok:
         outcome = _scan.error_outcome(located.status, located.reason, binary=located.path, version=located.version)
     else:
         if located.reason:
             _settings.warn_once(f"tirith plugin: using tirith {located.version} at {located.path}: {located.reason}")
         outcome = _scan.scan(
-            command, binary=located.path, version=located.version, cwd=cwd, env=env, timeout=settings.timeout
+            command,
+            binary=located.path,
+            version=located.version,
+            cwd=cwd,
+            env=env,
+            timeout=settings.timeout,
+            deadline=deadline,
         )
     decision = _decide.decide(outcome, settings, command=command, cwd=cwd, session_id=session_id, task_id=task_id)
     return decision, outcome, cwd
@@ -268,6 +317,7 @@ def check_process_input(
     args: Mapping[str, Any],
     task_id: str,
     session_id: str,
+    deadline: float | None = None,
 ) -> tuple[_decide.Decision, _scan.ScanOutcome, str]:
     """Check what a ``process_manage`` write/submit/close completes (``plan.scan``), or fail closed.
 
@@ -275,14 +325,15 @@ def check_process_input(
     a refusal stands, and its findings join the failed-check prompt, whose approval key is tied to
     this process and this text. With ``fail_closed`` off, that check is all there is.
     """
+    ids = {"args": args, "task_id": task_id, "session_id": session_id, "deadline": deadline}
     if plan.error is None:
         if plan.scan is None:
             return _decide.Decision("none", "allow"), _scan.ScanOutcome(kind="allow"), plan.text  # nothing runs yet
-        decision, outcome, _cwd = check_command(plan.scan, settings, args=args, task_id=task_id, session_id=session_id)
+        decision, outcome, _cwd = check_command(plan.scan, settings, **ids)
         return decision, outcome, plan.scan
     checked = None
     if plan.scan is not None:
-        decision, outcome, _cwd = check_command(plan.scan, settings, args=args, task_id=task_id, session_id=session_id)
+        decision, outcome, _cwd = check_command(plan.scan, settings, **ids)
         checked = (decision, outcome)
     decision, outcome = _fail_closed_after_check(
         checked,
@@ -332,6 +383,7 @@ def _on_pre_tool_call(
 ) -> dict | None:
     if tool_name not in WATCHED_TOOLS:
         return None
+    started = time.monotonic()
     settings = _settings.Settings()  # defaults (fail closed) until the user's settings are read
     command = ""
     plan: _input.Plan | None = None
@@ -366,16 +418,19 @@ def _on_pre_tool_call(
             plan = _PROCESS_INPUT.plan(plan.process, found, eof=_input.ends_input(args), call_id=input_call_id) or plan
             command = plan.text
         _double_scan_check()
+        limit = _hook_limit()
+        _warn_timeout_budget(settings.timeout, limit)
+        budget = _hook_budget(limit)
+        deadline = None if math.isinf(budget) else started + budget
+        ids = {"args": args, "task_id": task_id, "session_id": session_id, "deadline": deadline}
         if plan is None:
-            decision, outcome, cwd = check_command(command, settings, args=args, task_id=task_id, session_id=session_id)
+            decision, outcome, cwd = check_command(command, settings, **ids)
             if in_doubt:
                 decision, outcome = _ask_while_directory_unknown(
                     decision, outcome, settings, command=command, cwd=cwd, task_id=task_id, session_id=session_id
                 )
         else:
-            decision, outcome, command = check_process_input(
-                plan, settings, args=args, task_id=task_id, session_id=session_id
-            )
+            decision, outcome, command = check_process_input(plan, settings, **ids)
         if call_id:
             _SCANNED.set(call_id, checked)
             if decision.context:

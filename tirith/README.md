@@ -65,7 +65,13 @@ The first check runs three quick tirith commands to make sure the binary speaks 
 `tirith --version`, `tirith check` with an option no tirith knows (0.5.0 must reject it), and
 `tirith check` on `echo tirith-hermes-plugin-contract-check` (the verdict must say whether the command
 needs approval). A tirith that fails this, including a pre-release build without the approval field,
-counts as older than 0.5.0. The result is kept until the binary changes.
+counts as older than 0.5.0. The result is kept until the binary changes (a refusal for a minute, a
+failed attempt for 5 seconds, so calls queued behind a broken binary do not each wait for it again).
+
+Hermes stops waiting for a plugin after `plugins.hook_callback_timeout` (30 s by default), blocks the
+command, and then skips the plugin for 60 seconds, which blocks every tool. So each hook call, including
+the first one with the three startup commands, finishes 5 seconds before that limit (the plugin reads
+your Hermes setting): a check still running then is stopped and asks you, like any failed check.
 
 **Background terminals.** `process_manage` sends keystrokes: `write` types text, `submit` types text
 and Enter. The plugin keeps what was typed into each background process and checks the whole line when
@@ -118,7 +124,7 @@ settings. They are read on every command, so changes apply at once.
 | Setting | Default | Meaning |
 |---|---|---|
 | `path` | `""` | Empty: look for tirith on `PATH`, then in the usual install folders (Homebrew, `~/.local/bin`, `~/.cargo/bin`, Nix, npm, Scoop, `%LOCALAPPDATA%\tirith\bin`). Or an absolute path. |
-| `timeout` | `10` | Seconds per check, 1-60. Keep it below `plugins.hook_callback_timeout` (30 s by default). |
+| `timeout` | `10` | Seconds per check, 1-60; 12 or less is advised. A check is also stopped 5 s before `plugins.hook_callback_timeout` (30 s by default), and the first one shares that time with the startup commands; above 12 s, or above what fits that limit, a warning is logged. |
 | `offline` | `false` | Run checks with `TIRITH_OFFLINE=1` (see Disclosure). |
 | `fail_closed` | `true` | When tirith cannot give an answer, ask (and block in unattended runs). Off: the command runs unchecked and a warning is logged. |
 | `block_action` | `approve` | tirith blocks: `approve` asks you, `block` refuses. |

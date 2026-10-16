@@ -4,9 +4,11 @@ import functools
 import inspect
 import json
 import logging
+import math
 import os
 import sys
 import threading
+import time
 import types
 
 import pytest
@@ -1015,6 +1017,104 @@ def test_failures_ask_for_approval(tmp_path, ctx_factory, config, reason_class, 
     assert directive["action"] == "approve"
     assert directive["rule_key"].startswith(f"tirith:error:{reason_class}:")
     assert text in directive["message"]
+
+
+# --- Hermes's hook time limit ----------------------------------------------------------------------
+# Hermes blocks a pre_tool_call callback that runs past plugins.hook_callback_timeout, then skips the
+# plugin's callback for 60 s, which blocks every tool. Each hook call must answer before that.
+
+
+def _small_hook_limit(monkeypatch) -> float:
+    """A hook limit that leaves a few seconds for a run once the margin and the kill grace are taken."""
+    limit = 9.0 + 2 * _scan.KILL_GRACE
+    monkeypatch.setattr(plugin, "HOOK_LIMIT_DEFAULT", limit)
+    return limit
+
+
+def test_a_hung_tirith_on_the_first_call_asks_inside_the_hook_limit(tmp_path, ctx_factory, monkeypatch):
+    limit = _small_hook_limit(monkeypatch)
+    hung = make_fake(str(tmp_path / "hung"))
+    monkeypatch.setenv("FAKE_TIRITH_STARTUP_DELAY", "120")  # every run of the binary hangs
+    _ctx, registered = ctx_factory(path=hung)
+    started = time.monotonic()
+    directive = pre(registered, "git status")
+    elapsed = time.monotonic() - started
+    assert directive["action"] == "approve" and directive["rule_key"].startswith("tirith:error:"), directive
+    assert elapsed < limit - plugin.HOOK_MARGIN + 1.0, elapsed
+    # the next callers get that answer at once instead of each waiting for the binary again
+    started = time.monotonic()
+    assert pre(registered, "git status", call_id="call-2")["action"] == "approve"
+    assert time.monotonic() - started < 2.0
+
+
+def test_a_slow_check_is_cut_to_what_is_left_of_the_hook_limit(tmp_path, ctx_factory, monkeypatch):
+    slow_rule = {"contains": "git", "rc": 0, "verdict": verdict("allow"), "sleep": 120}
+    slow = make_fake(str(tmp_path / "slow"), {"rules": [slow_rule]})
+    _ctx, registered = ctx_factory(path=slow)  # timeout 25: longer than the time the hook call has left
+    assert pre(registered, "ls", call_id="warm-up") is None  # the gate passes once, with time to spare
+    limit = _small_hook_limit(monkeypatch)
+    started = time.monotonic()
+    directive = pre(registered, "git status")
+    elapsed = time.monotonic() - started
+    assert directive["action"] == "approve" and directive["rule_key"].startswith("tirith:error:timeout:")
+    assert "hook time limit" in directive["message"]
+    assert elapsed < limit - plugin.HOOK_MARGIN + 1.0, elapsed
+
+
+def test_a_timeout_that_does_not_fit_the_hook_limit_is_warned(ctx_factory, fake, monkeypatch, caplog):
+    monkeypatch.setattr(plugin, "HOOK_LIMIT_DEFAULT", 20.0)
+    _ctx, registered = ctx_factory(path=fake, timeout=20)
+    with caplog.at_level(logging.WARNING):
+        assert pre(registered, "ls") is None
+    assert any("does not fit Hermes's hook time limit" in r.getMessage() for r in caplog.records)
+
+
+def test_the_default_timeout_fits_the_default_hook_limit(ctx_factory, fake, monkeypatch, caplog):
+    monkeypatch.setattr(plugin, "HOOK_LIMIT_DEFAULT", 30.0)
+    _ctx, registered = ctx_factory(path=fake, timeout=10)
+    with caplog.at_level(logging.WARNING):
+        assert pre(registered, "ls") is None
+    assert not any("timeout" in r.getMessage() for r in caplog.records)
+
+
+def test_the_hook_limit_comes_from_a_loaded_hermes(monkeypatch):
+    hermes = types.SimpleNamespace(_resolve_hook_callback_timeout=lambda: 12.0)
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", hermes)
+    assert plugin._hook_limit() == 12.0
+    hermes._resolve_hook_callback_timeout = lambda: 0.0
+    assert plugin._hook_limit() == math.inf  # Hermes then runs the callback without a time limit
+    hermes._resolve_hook_callback_timeout = lambda: float("nan")
+    assert plugin._hook_limit() == plugin.HOOK_LIMIT_DEFAULT
+
+    def broken():
+        raise RuntimeError("config")
+
+    hermes._resolve_hook_callback_timeout = broken
+    assert plugin._hook_limit() == plugin.HOOK_LIMIT_DEFAULT
+    monkeypatch.delitem(sys.modules, "hermes_cli.plugins")
+    assert plugin._hook_limit() == plugin.HOOK_LIMIT_DEFAULT  # never imported on our behalf
+
+
+@pytest.mark.parametrize("limit,expected", [(30.0, 25.0), (0.0, None), (6.0, 3.0)])
+def test_each_hook_call_gets_one_deadline(hooks, monkeypatch, limit, expected):
+    _ctx, registered = hooks
+    monkeypatch.setitem(
+        sys.modules, "hermes_cli.plugins", types.SimpleNamespace(_resolve_hook_callback_timeout=lambda: limit)
+    )
+    seen = []
+    real = plugin.check_command
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs["deadline"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(plugin, "check_command", spy)
+    started = time.monotonic()
+    pre(registered, "ls")
+    if expected is None:
+        assert seen == [None]
+    else:
+        assert started + expected - 0.5 <= seen[0] <= started + expected + 0.5
 
 
 @pytest.mark.parametrize("fail_closed", [True, False])

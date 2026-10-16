@@ -60,12 +60,29 @@ def test_timeout_rejects_bool():
 
 @pytest.mark.parametrize(
     "value,expected,n_warnings",
-    [(10, 10, 0), ("15", 15, 0), (0.5, 1, 0), (0, 1, 1), (-3, 1, 1), (100, 60, 2), (30, 30, 1), (25, 25, 0)],
+    [
+        (10, 10, 0),
+        (12, 12, 0),
+        ("15", 15, 1),
+        (0.5, 1, 0),
+        (0, 1, 1),
+        (-3, 1, 1),
+        (100, 60, 2),
+        (30, 30, 1),
+        (25, 25, 1),
+        (13, 13, 1),
+    ],
 )
 def test_timeout_clamping(value, expected, n_warnings):
     settings, warnings = parse({"timeout": value})
     assert settings.timeout == expected
     assert len(warnings) == n_warnings
+
+
+def test_a_timeout_above_the_advised_one_explains_the_hook_limit():
+    _settings, warnings = parse({"timeout": 20})
+    assert "plugins.hook_callback_timeout" in warnings[0] and "startup check" in warnings[0]
+    assert "asks for approval" in warnings[0]
 
 
 def test_timeout_nan_and_text():

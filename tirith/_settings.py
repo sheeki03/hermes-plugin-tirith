@@ -45,8 +45,10 @@ BOOL_KEYS = ("offline", "fail_closed", "warn_context", "scan_process_input")
 
 TIMEOUT_MIN = 1
 TIMEOUT_MAX = 60
-# Hermes abandons a hook callback after plugins.hook_callback_timeout (default 30 s).
-TIMEOUT_WARN_ABOVE = 25
+# Hermes abandons a hook callback after plugins.hook_callback_timeout (default 30 s). The first check
+# after Hermes starts also runs tirith's startup check (up to 15 s, _locate.GATE_BUDGET), and both must
+# finish well inside that limit (the plugin stops at 25 s), so longer timeouts are warned about.
+TIMEOUT_WARN_ABOVE = 12
 
 # Rule ids whose warnings can never be ignored through ``ignore_rules``: obfuscation and
 # hidden text, input tirith could not analyse, known-malicious intelligence, policy
@@ -182,8 +184,10 @@ def _parse_timeout(value: Any, warnings: list[str]) -> int:
         seconds = clamped
     if seconds > TIMEOUT_WARN_ABOVE:
         warnings.append(
-            f"tirith plugin: timeout={seconds} s is close to Hermes's hook limit "
-            "(plugins.hook_callback_timeout, 30 s by default); a check that runs that long is blocked by Hermes"
+            f"tirith plugin: timeout={seconds} s is above {TIMEOUT_WARN_ABOVE} s. Every check must finish within "
+            "Hermes's hook time limit (plugins.hook_callback_timeout, 30 s by default), and the first one after "
+            "Hermes starts also runs tirith's startup check, so a check can be stopped before the timeout; "
+            "a stopped check asks for approval"
         )
     return seconds
 
