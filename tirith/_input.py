@@ -42,6 +42,10 @@ _GONE = frozenset({"exited", "killed", "already_exited"})
 # the best-known text is still checked. Control keys mean the text is not what runs, so it is not.
 _GUESSED = frozenset({"unconfirmed", "ambiguous", "too_many"})
 _WORD_BREAKS = " \t\n;&|()<>"
+# Reserved words that open a compound command, and the word that closes it.
+_OPENERS = {"if": "fi", "case": "esac", "for": "done", "select": "done", "while": "done", "until": "done"}
+# Reserved words after which the next word starts a command again (where reserved words count).
+_LEAD_INS = frozenset({"if", "then", "else", "elif", "while", "until", "do", "!", "time", "{"})
 
 
 @dataclass(frozen=True)
@@ -117,95 +121,277 @@ def _heredoc_word(text: str, index: int) -> tuple[str, bool, int] | None:
     return word, strip_tabs, index
 
 
+class _Continuation:
+    """One pass over complete lines of shell input: does the shell still wait for more of the command?
+
+    Tracks quotes, escaped newlines, heredocs, a trailing ``|``, ``&&`` or ``||``, and the constructs
+    a shell keeps reading until they close: ``(`` (a subshell, ``$(``, ``<(``, ``>(``, an array,
+    ``((``), ``${``, a ``{ ... }`` group, and ``if``, ``case``, ``for``, ``select``, ``while`` and
+    ``until``. Reserved words count only where a command starts, as in the shell. This keeps input
+    together; it is not a parser. A construct it wrongly takes for open only means that later lines
+    are checked together with the earlier ones.
+    """
+
+    def __init__(self, text: str):
+        self.text = text
+        self.quote = ""
+        self.prev = "\n"
+        self.line: list[str] = []
+        self.last_line = ""
+        self.heredocs: list[tuple[str, bool]] = []
+        self.stack: list[str] = []  # what closes each open construct: ")", "))", "${", "}", "fi", "esac", "done"
+        self.command = True  # the next word starts a command, so reserved words count
+        self.word: list[str] = []
+        self.word_command = False  # the current word started where a command starts
+        self.word_plain = True  # no quotes, escapes or expansions: it can be a reserved word
+        self.function_name = False  # after ``function``: its name comes next, then the body
+        self.case_words = 0  # after ``case``: 2 = its word comes next, 1 = ``in`` comes next
+        self.pattern = False  # in a ``case`` pattern (before its ``)``), where only ``esac`` counts
+
+    def _start_word(self) -> None:
+        if not self.word:
+            self.word_command = self.command
+            self.word_plain = True
+            self.command = False
+
+    def _end_word(self) -> None:
+        if not self.word:
+            return
+        token = "".join(self.word) if self.word_plain else ""
+        at_command = self.word_command
+        self.word = []
+        stack = self.stack
+        if self.case_words == 2:
+            self.case_words = 1
+            return
+        if self.case_words == 1:
+            self.case_words = 0
+            if token == "in":
+                self.pattern = True
+                return
+        if self.pattern:
+            if token == "esac" and stack and stack[-1] == "esac":
+                stack.pop()
+                self.pattern = False
+            return
+        if self.function_name:
+            self.function_name = False
+            self.command = True  # ``function name { ...``
+            return
+        if not at_command:
+            return
+        if token in _OPENERS:
+            stack.append(_OPENERS[token])
+            self.case_words = 2 if token == "case" else 0
+        elif token in ("fi", "esac", "done", "}"):
+            if stack and stack[-1] == token:
+                stack.pop()
+        elif token == "{":
+            stack.append("}")
+        elif token == "function":
+            self.function_name = True
+        if token in _LEAD_INS:
+            self.command = True
+
+    def _heredoc_bodies(self, index: int) -> int | None:
+        """Skip the bodies of the heredocs opened on the line that just ended; None if one is unfinished."""
+        text, size = self.text, len(self.text)
+        for word, strip_tabs in self.heredocs:
+            while True:
+                if index >= size:
+                    return None
+                end = text.find("\n", index)
+                if end < 0:
+                    return None
+                body = text[index:end]
+                index = end + 1
+                if (body.lstrip("\t") if strip_tabs else body) == word:
+                    break
+        self.heredocs = []
+        return index
+
+    def run(self) -> bool:
+        text, size, stack = self.text, len(self.text), self.stack
+        index = 0
+        while index < size:
+            char = text[index]
+            if self.quote:
+                if char == "\\" and self.quote != "'":
+                    index += 2
+                    continue
+                if char == self.quote[-1]:
+                    self.quote = ""
+                    self.prev = char
+                    self.line.append("q")
+                index += 1
+                continue
+            if char == "\\":
+                if text.startswith("\n", index + 1):
+                    if index + 2 >= size:
+                        return True
+                    index += 2
+                    continue
+                self._start_word()
+                self.word_plain = False
+                self.word.append("x")
+                self.line.append("x")
+                self.prev = "x"
+                index += 2
+                continue
+            if char in "'\"`":
+                self._start_word()
+                self.word_plain = False
+                self.word.append(char)
+                self.quote = "$'" if char == "'" and self.prev == "$" else char
+                index += 1
+                continue
+            if stack and stack[-1] == "${":  # ``${x:- #(<<}``: literal up to the closing ``}``
+                index = self._parameter(char, index)
+                self.prev = char
+                continue
+            if char == "#" and self.prev in _WORD_BREAKS:
+                while index < size and text[index] != "\n":
+                    index += 1
+                continue
+            if char == "<" and text.startswith("<", index + 1):
+                self._end_word()
+                if text.startswith("<", index + 2):  # here-string
+                    self.line.append("<<<")
+                    self.prev = "<"
+                    index += 3
+                    continue
+                # ``$((1<<2))`` and ``((x<<y))`` are shifts, not heredocs
+                found = None if stack and stack[-1] == "))" else _heredoc_word(text, index + 2)
+                self.line.append("<<")
+                if found is None:
+                    self.prev = "<"
+                    index += 2
+                    continue
+                self.heredocs.append(found[:2])
+                self.prev = "x"
+                index = found[2]
+                continue
+            if char == "\n":
+                self._end_word()
+                significant = "".join(self.line).strip()
+                if significant:
+                    self.last_line = significant
+                self.line = []
+                self.prev = char
+                self.command = True
+                skipped = self._heredoc_bodies(index + 1)
+                if skipped is None:
+                    return True
+                index = skipped
+                continue
+            self.line.append(char)
+            index = self._unquoted(char, index)
+            self.prev = char
+        if self.quote or self.heredocs:
+            return True
+        self._end_word()
+        significant = "".join(self.line).strip()
+        if significant:
+            self.last_line = significant
+        return bool(stack) or self.last_line.endswith(("|", "&&", "|&"))
+
+    def _unquoted(self, char: str, index: int) -> int:
+        """One unquoted character other than a newline, quote, escape or ``<<``; returns the next index."""
+        text, stack = self.text, self.stack
+        following = text[index + 1] if index + 1 < len(text) else ""
+        if char in " \t":
+            self._end_word()
+        elif char in ";&|":
+            self._end_word()
+            if char == ";" and following in ";&":  # ``;;``, ``;&``, ``;;&``: the next case pattern
+                self.pattern = bool(stack) and stack[-1] == "esac"
+                self.command = not self.pattern
+                self.line.append(following)
+                return index + 2
+            if not self.pattern:  # ``a|b)`` is still the pattern
+                self.command = not (char in "&|" and self.prev in "<>")  # ``>&2`` and ``>|`` redirect
+        elif char in "<>":
+            self._end_word()
+        elif char == "(":
+            self._end_word()
+            if self.pattern:  # ``(a)``: the optional parenthesis before a case pattern
+                return index + 1
+            if following == "(":  # ``((`` and ``$((``: arithmetic
+                stack.append("))")
+                self.line.append(following)
+                self.command = False
+                return index + 2
+            stack.append(")")
+            self.command = True
+        elif char == ")":
+            self._end_word()
+            if self.pattern:  # the end of a case pattern: a command follows
+                self.pattern = False
+                self.command = True
+            elif stack and stack[-1] == "))":
+                if following == ")":
+                    stack.pop()
+                    self.line.append(following)
+                    self.command = False
+                    return index + 2
+                stack[-1] = ")"  # ``((a); b)`` was two subshells: the inner one ends here
+                self.command = False
+            elif stack and stack[-1] == ")":
+                stack.pop()
+                self.command = self.prev == "("  # ``name()``: the function body follows
+            else:
+                self.command = True
+        elif char == "{" and self._expansion_opens():
+            self.word_plain = False
+            self.word.append(char)
+            stack.append("${")
+        else:
+            self._start_word()
+            self.word.append(char)
+        return index + 1
+
+    def _expansion_opens(self) -> bool:
+        """Whether a ``{`` here opens ``${``: the word ends in an odd run of ``$`` (``$${`` is ``$$`` then ``{``)."""
+        count = 0
+        for char in reversed(self.word):
+            if char != "$":
+                break
+            count += 1
+        return count % 2 == 1
+
+    def _parameter(self, char: str, index: int) -> int:
+        """One unquoted character inside ``${...}``: literal, except ``}`` and nested ``$(``, ``$((``, ``${``."""
+        stack = self.stack
+        self._start_word()
+        self.word_plain = False
+        if char == "}":
+            stack.pop()
+        elif char == "(" and self.word[-1:] == ["$"]:
+            if self.text.startswith("(", index + 1):
+                stack.append("))")
+                self.word.append("((")
+                return index + 2
+            stack.append(")")
+            self.word = []  # a command starts inside ``$(``
+            self.command = True
+            return index + 1
+        elif char == "{" and self._expansion_opens():
+            stack.append("${")
+        self.word.append(char)
+        return index + 1
+
+
 def continues(text: str) -> bool:
     """Whether a POSIX shell that read ``text`` (whole lines) still waits for more of the same command.
 
-    True for an open quote or backtick, an escaped final newline, an unfinished heredoc, or a last
-    non-blank line ending in ``|``, ``||``, ``&&`` or ``|&``. Other open constructs (``$(``, ``{``)
-    are reported by tirith itself. Used only to keep such a command together for the next check;
-    every complete line is checked either way.
+    True for an open quote or backtick, an escaped final newline, an unfinished heredoc, a last
+    non-blank line ending in ``|``, ``||``, ``&&`` or ``|&``, or an open ``(`` (``$(``, ``<(``, ``>(``,
+    a subshell, an array), ``${``, ``{`` group, ``if``, ``case`` or loop. Such a command is kept
+    together for the next check, so lines a person approved one at a time (an unfinished
+    ``bash -c $(``) are checked again together with the lines that complete them. Every complete
+    line is checked either way.
     """
-    quote = ""
-    prev = "\n"
-    line: list[str] = []
-    last_line = ""
-    heredocs: list[tuple[str, bool]] = []
-    index, size = 0, len(text)
-    while index < size:
-        char = text[index]
-        if quote:
-            if char == "\\" and quote != "'":
-                index += 2
-                continue
-            if char == quote[-1]:
-                quote = ""
-                prev = char
-                line.append("q")
-            index += 1
-            continue
-        if char == "\\":
-            if text.startswith("\n", index + 1):
-                if index + 2 >= size:
-                    return True
-                index += 2
-                continue
-            line.append("x")
-            prev = "x"
-            index += 2
-            continue
-        if char in "'\"`":
-            quote = "$'" if char == "'" and prev == "$" else char
-            index += 1
-            continue
-        if char == "#" and prev in _WORD_BREAKS:
-            while index < size and text[index] != "\n":
-                index += 1
-            continue
-        if char == "<" and text.startswith("<", index + 1):
-            if text.startswith("<", index + 2):  # here-string
-                line.append("<<<")
-                prev = "<"
-                index += 3
-                continue
-            found = _heredoc_word(text, index + 2)
-            line.append("<<")
-            if found is None:
-                prev = "<"
-                index += 2
-                continue
-            heredocs.append(found[:2])
-            prev = "x"
-            index = found[2]
-            continue
-        if char == "\n":
-            significant = "".join(line).strip()
-            if significant:
-                last_line = significant
-            line = []
-            prev = char
-            index += 1
-            for word, strip_tabs in heredocs:
-                while True:
-                    if index >= size:
-                        return True
-                    end = text.find("\n", index)
-                    if end < 0:
-                        return True
-                    body = text[index:end]
-                    index = end + 1
-                    if (body.lstrip("\t") if strip_tabs else body) == word:
-                        break
-            heredocs = []
-            continue
-        line.append(char)
-        prev = char
-        index += 1
-    if quote or heredocs:
-        return True
-    significant = "".join(line).strip()
-    if significant:
-        last_line = significant
-    return last_line.endswith(("|", "&&", "|&"))
+    return _Continuation(text).run()
 
 
 def advance(prior: str, keys: str) -> str:

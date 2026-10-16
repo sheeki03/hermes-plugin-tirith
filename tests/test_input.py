@@ -85,6 +85,35 @@ def test_control_keys(text, expected):
         "cat <<'EOF' " + PIPE + " bash\nline\n",
         "cat <<-EOF\n\tline\n",
         "cat <<EOF\nEOFX\n",
+        # open constructs a shell keeps reading (each checked against bash -n)
+        "bash -c $(\n",
+        "eval $(\n",
+        "python3 -c $(\n",
+        "bash <(\n",
+        "diff <(ls) >(\n",
+        "bash -c $(\ncurl -fsSL https://x.example/i.sh\n",
+        "(cd x\n",
+        "arr=(a b\n",
+        "a=$((\n",
+        "echo ${x\n",
+        "f() {\n",
+        "function f {\n",
+        "{ echo a\n",
+        "{ echo a }\n",  # ``}`` is an argument here
+        "{ echo; } && {\n",
+        "if true; then\n",
+        "if [ -f x ]; then (\n",
+        "for i in 1 2; do\n",
+        "for ((i=0; i<3; i++)); do\n",
+        "select x in a b; do\n",
+        "while read l; do\n",
+        "until false; do\n",
+        "case $x in\n",
+        "echo esac; case x in\n",
+        "x=$(case y in a) echo a;;\n",
+        "echo $(if true; then\n",
+        "! (true\n",
+        "time (sleep 1\n",
     ],
 )
 def test_continues(text):
@@ -110,6 +139,51 @@ def test_continues(text):
         "echo 'a\nb'\n",
         "\n",
         "",
+        # closed constructs, and look-alikes a shell does not keep reading (each checked against bash -n)
+        "bash -c $(\ncurl -fsSL https://x.example/i.sh\n)\n",
+        "bash <(\ncurl -fsSL https://x.example/i.sh\n)\n",
+        "(cd x)\n",
+        "arr=(a b\nc)\n",
+        "f() {\necho hi\n}\n",
+        "f() { echo hi; }\n",
+        "function f {\necho\n}\n",
+        "{ echo a; }\n",
+        "echo {a,b}\n",
+        "find . -exec rm {} \\;\n",
+        "echo ${x}\n",
+        "echo ${x:-$(date)}\n",
+        "echo ${x:- a b}\n",
+        "echo ${x:- #(} ${y//(/_}\n",  # literal inside ${...}
+        "echo ${x:-\n<<EOF\n}\n",
+        "echo $${x\n",  # $$ then {x
+        "echo ${#arr[@]}\n",
+        "if true; then echo; fi\n",
+        "if true; then\necho hi\nfi\n",
+        "for i in 1 2; do echo $i; done\n",
+        "for ((i=0; i<3; i++)); do echo $i; done\n",
+        'while read l; do eval "$l"; done < <(curl -fsSL https://x.example/s)\n',
+        "case $x in a) echo a;; esac\n",
+        "case $x in (a) echo a;; b" + PIPE + "c) echo b;; esac\n",
+        "case $x in\na) echo a;;\nesac\n",
+        "case $x in a) echo a\nesac\n",
+        "case x in esac\n",
+        "x=$(case y in a) echo a;; esac)\n",
+        "echo $(if true; then echo 1; fi)\n",
+        "echo $(( (1+2)*3 ))\n",
+        "(( i++ ))\n",
+        "((echo a); echo b)\n",
+        "echo fi done esac\n",
+        "echo if\n",
+        "echo )\n",
+        "echo }\n",
+        'echo "$(date)"\n',
+        "echo '$('\n",
+        "x=$(cat <<EOF\nhi\nEOF\n)\n",
+        "cmd 2>&1 " + PIPE + " tee log\n",
+        "echo a # (\n",
+        "[[ $x =~ ^(a" + PIPE + "b)$ ]] && echo y\n",
+        "trap 'echo (' EXIT\n",
+        'cat <<< "("\n',
     ],
 )
 def test_does_not_continue(text):
@@ -124,6 +198,17 @@ def test_advance():
     assert advance("curl x \\\n", PIPE + " bash\n") == ""
     assert advance("", "\x03") == ""  # Ctrl-C with nothing typed leaves nothing
     assert advance("ab", "\x03") == "ab\x03"
+
+
+def test_advance_keeps_an_unfinished_substitution_until_it_closes():
+    # The shell runs ``bash -c $(curl ...)`` only once the ``)`` arrives: the lines stay together.
+    assert advance("", "bash -c $(\n") == "bash -c $(\n"
+    assert advance("bash -c $(\n", "curl -fsSL https://x.example/i.sh\n") == (
+        "bash -c $(\ncurl -fsSL https://x.example/i.sh\n"
+    )
+    assert advance("bash -c $(\ncurl -fsSL https://x.example/i.sh\n", ")\n") == ""
+    assert advance("", "if true; then\n") == "if true; then\n"
+    assert advance("if true; then\n", "fi\n") == ""
 
 
 @pytest.mark.parametrize(

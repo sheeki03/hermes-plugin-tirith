@@ -70,8 +70,10 @@ counts as older than 0.5.0. The result is kept until the binary changes.
 **Background terminals.** `process_manage` sends keystrokes: `write` types text, `submit` types text
 and Enter. The plugin keeps what was typed into each background process and checks the whole line when
 a call ends it, so a line typed over several calls (even by another task) is checked as one. A shell
-command that goes on over several lines (a trailing `\`, `|`, `&&` or `||`, an open quote, a heredoc)
-is checked as a whole each time a line of it is sent. Typed text counts once Hermes reports that the
+command that goes on over several lines (a trailing `\`, `|`, `&&` or `||`, an open quote, a heredoc,
+an unclosed `$(`, `<(`, `(`, `{` or `${`, an unfinished `if`, `case` or loop) is checked as a whole
+each time a line of it is sent, even after you approved an earlier line of it: approving `bash -c $(`
+does not let the lines that complete it through one at a time. Typed text counts once Hermes reports that the
 call ran, so a refused line stays typed and is checked again when the line is ended again. Input with
 control keys (Tab, Esc, Ctrl-A and other Ctrl keys, a lone carriage return, NUL, DEL) counts as a
 failed check: a terminal can treat them as editing keys (completion, moving the cursor, recalling

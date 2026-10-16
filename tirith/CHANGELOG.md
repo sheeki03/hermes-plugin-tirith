@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+Fixes from the review of 0.1.0:
+
+- Background terminal input: a command left open by an unclosed `$(`, `<(`, `>(`, `(`, `{` or `${`, or
+  an unfinished `if`, `case`, `for`, `select`, `while` or `until`, is kept together like a trailing `|`
+  or an open quote. After a person approved an opening line such as `bash -c $(`, `eval $(` or
+  `bash <(`, the lines that complete it used to be checked one at a time (each harmless on its own) while
+  the shell ran them as one command; they are now checked together with the opening line.
+
 ## 0.1.0 (unreleased)
 
 First release. Needs tirith 0.5.0 or later and Hermes 0.21.5 or later; tested with the Hermes releases
