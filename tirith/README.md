@@ -175,8 +175,9 @@ Hermes 0.21.4 and earlier are not supported: there a crashing or slow plugin let
   or `.` as a command (also quoted or escaped, as in `'cd'` or `\cd`, after `NAME=value` assignments,
   or after `builtin`, `command` or `eval`), a later command without an absolute `workdir` is still
   checked in the directory known so far and then asks (refused in unattended runs): its repository
-  policy may not be the one that applies. A directory change inside a function, alias or script with
-  another name, or one built from a variable (`$CMD /tmp`, `eval "$x"`), is not noticed.
+  policy may not be the one that applies. The prompt says so and shows tirith's verdict in the
+  directory known so far; a refusal there stays a refusal. A directory change inside a function, alias
+  or script with another name, or one built from a variable (`$CMD /tmp`, `eval "$x"`), is not noticed.
 - Another plugin can change a command after tirith checked it (a `modify` directive). The plugin notices
   afterwards and logs a warning; it cannot check the changed command.
 - `execute_code` (Python) and file-writing tools are not checked; tirith checks shell commands.

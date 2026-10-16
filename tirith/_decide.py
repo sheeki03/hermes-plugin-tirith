@@ -105,9 +105,11 @@ def _cap(message: str) -> str:
     return message if len(message) <= MAX_MESSAGE else message[: MAX_MESSAGE - 1] + "…"
 
 
-def _approval_message(prefix: str, excerpt: str, where: str, details: str, suffix: str = "") -> str:
+def _approval_message(
+    prefix: str, excerpt: str, where: str, details: str, suffix: str = "", *, place: str = "in"
+) -> str:
     """Keep the operation visible; only optional details consume the remaining space."""
-    heading = f"{prefix} Command: {excerpt} (in {where})."
+    heading = f"{prefix} Command: {excerpt} ({place} {where})."
     ending = f" {suffix}" if suffix else ""
     available = MAX_MESSAGE - len(heading) - len(ending) - 1
     if len(details) > available:
@@ -310,4 +312,59 @@ def decide(
             reason_class=outcome.reason_class or "unknown",
             scope=scope,
         ),
+    )
+
+
+def _verdict_there(outcome: ScanOutcome, settings: _settings.Settings) -> str:
+    """tirith's verdict for a command it checked, as one sentence for a prompt."""
+    if outcome.kind == "block":
+        return f"tirith flagged it there: {format_findings(outcome.findings)}."
+    if outcome.requires_approval or outcome.kind == "warn_ack":
+        rule = f" (policy rule {_safe_id(outcome.approval_rule)})" if outcome.approval_rule else ""
+        return f"Your tirith policy requires approval for it there{rule}: {format_findings(outcome.findings)}."
+    if outcome.kind == "bypass":
+        return "It asks tirith to skip its check (TIRITH=0), which your tirith policy allows."
+    findings = filter_findings(outcome.findings, settings) if outcome.kind == "warn" else ()
+    if findings:
+        return f"tirith warned there: {format_findings(findings)}."
+    return "tirith found nothing there."
+
+
+def cwd_pending(
+    outcome: ScanOutcome,
+    checked: Decision,
+    settings: _settings.Settings,
+    *,
+    command: str,
+    cwd: str,
+    session_id: str = "",
+    task_id: str = "",
+) -> Decision:
+    """Ask about a command tirith checked in ``cwd`` while an earlier batched command may still change it.
+
+    ``outcome`` and ``checked`` are tirith's verdict in ``cwd`` (not a refusal, not a failed check). The
+    prompt says why it asks and shows that verdict; a warning stays attached to the result.
+    """
+    return Decision(
+        "approve",
+        "error",
+        _approval_message(
+            "The directory this command will run in is not known yet.",
+            sanitize(command, MAX_EXCERPT),
+            _display_cwd(cwd),
+            "An earlier terminal command that can change directory has not run yet, and another "
+            f"directory can have another tirith policy. {_verdict_there(outcome, settings)}",
+            "Approve only if it may run in whichever directory the earlier command leaves.",
+            place="checked in",
+        ),
+        rule_key(
+            "error",
+            command,
+            cwd,
+            outcome.findings,
+            session_id=session_id,
+            task_id=task_id,
+            reason_class="cwd_pending",
+        ),
+        context=checked.context,
     )

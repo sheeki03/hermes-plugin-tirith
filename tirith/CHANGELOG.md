@@ -17,6 +17,11 @@ Fixes from the review of 0.1.0:
   had reported a directory change, even if the task was still running commands, which were then checked
   in `TERMINAL_CWD` or Hermes's own directory under the wrong repository policy. Each check now counts as
   a use (least recently used goes first) and up to 4096 tasks are remembered.
+- The Hermes Desktop batch prompt for a command whose directory is not known yet no longer says "tirith
+  could not check this command" (tirith did check it). It says that an earlier command that can change
+  directory has not run yet, and shows tirith's verdict in the directory known so far (nothing found, a
+  warning, a required policy approval or a finding). A warning stays attached to the result once
+  approved. A failed check asks with its own reason, and a refusal still stands.
 
 ## 0.1.0 (unreleased)
 

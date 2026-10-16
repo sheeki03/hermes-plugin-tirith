@@ -116,6 +116,39 @@ def _directory_in_doubt(args: Any, task_id: str) -> bool:
     return any(task == task_id and _moves_directory(command) for task, command in _PENDING_TERMINAL.values())
 
 
+def _ask_while_directory_unknown(
+    decision: _decide.Decision,
+    outcome: _scan.ScanOutcome,
+    settings: _settings.Settings,
+    *,
+    command: str,
+    cwd: str,
+    task_id: str,
+    session_id: str,
+) -> tuple[_decide.Decision, _scan.ScanOutcome]:
+    """tirith checked the command in ``cwd``, but an earlier batched command may change directory first.
+
+    A refusal stands, and a failed check already asks with its own reason. Otherwise ask, showing
+    tirith's verdict in ``cwd``. With ``fail_closed`` off, the check is all there is.
+    """
+    if decision.action == "block" or outcome.kind == "error" or not settings.fail_closed:
+        return decision, outcome
+    pending = _scan.error_outcome(
+        *_CWD_PENDING,
+        findings=outcome.findings,
+        notes=outcome.notes,
+        deferred=outcome.deferred,
+        rc=outcome.rc,
+        binary=outcome.binary,
+        version=outcome.version,
+        duration_ms=outcome.duration_ms,
+    )
+    asked = _decide.cwd_pending(
+        outcome, decision, settings, command=command, cwd=cwd, session_id=session_id, task_id=task_id
+    )
+    return asked, pending
+
+
 def _double_scan_check() -> None:
     # Hermes 0.21.5 still runs its built-in tirith check. Only look when Hermes's
     # own ``tools`` package is already loaded, so nothing is imported on our behalf.
@@ -334,18 +367,10 @@ def _on_pre_tool_call(
             command = plan.text
         _double_scan_check()
         if plan is None:
-            decision, outcome, _cwd = check_command(
-                command, settings, args=args, task_id=task_id, session_id=session_id
-            )
+            decision, outcome, cwd = check_command(command, settings, args=args, task_id=task_id, session_id=session_id)
             if in_doubt:
-                decision, outcome = _fail_closed_after_check(
-                    (decision, outcome),
-                    _CWD_PENDING,
-                    settings,
-                    command=command,
-                    args=args,
-                    task_id=task_id,
-                    session_id=session_id,
+                decision, outcome = _ask_while_directory_unknown(
+                    decision, outcome, settings, command=command, cwd=cwd, task_id=task_id, session_id=session_id
                 )
         else:
             decision, outcome, command = check_process_input(

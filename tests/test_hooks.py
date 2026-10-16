@@ -1289,6 +1289,7 @@ def test_batched_command_after_a_pending_cd_fails_closed(hooks, fake, tmp_path):
     assert scans(fake)[-1]["stdin"] == b"make deploy"  # still checked, in the directory known now
     flagged = pre(registered, ATTACK, call_id="b3")
     assert flagged["rule_key"].startswith("tirith:error:cwd_pending:") and "curl_pipe_shell" in flagged["message"]
+    assert "tirith flagged it there" in flagged["message"]
     assert pre(registered, METADATA, call_id="b4")["action"] == "block"
     # once the cd has run, Hermes reports the directory and later commands are checked there
     post_hook(
@@ -1300,6 +1301,40 @@ def test_batched_command_after_a_pending_cd_fails_closed(hooks, fake, tmp_path):
     )
     assert pre(registered, "make deploy", call_id="b5") is None
     assert os.path.samefile(scans(fake)[-1]["cwd"], project)
+
+
+def test_pending_cd_prompt_states_the_reason_and_the_verdict_in_the_known_directory(hooks, tmp_path):
+    # tirith did check the command; the prompt must not claim otherwise.
+    _ctx, registered = hooks
+    assert pre(registered, f"cd {tmp_path}", call_id="b1") is None
+    clean = pre(registered, "make test", call_id="b2")["message"]
+    assert clean.startswith("The directory this command will run in is not known yet. Command: make test (checked in ")
+    assert "can change directory has not run yet" in clean and "tirith found nothing there." in clean
+    assert "could not check" not in clean and "without a tirith check" not in clean
+    warned = pre(registered, WARNED, call_id="b3")
+    assert "tirith warned there: [MEDIUM] TLD (lookalike_tld)." in warned["message"]
+    assert warned["rule_key"].startswith("tirith:error:cwd_pending:")
+    # approved, it runs, and tirith's warning still reaches the result
+    out = transform_hook(registered, tool_name="terminal", result='{"output": "ok"}', tool_call_id="b3")
+    assert "[tirith] Warning" in out and "lookalike_tld" in out
+
+
+def test_pending_cd_prompt_shows_a_required_policy_approval(tmp_path, ctx_factory):
+    rule = {"contains": "deploy", "rc": 3, "verdict": verdict("warn_ack", [("x", "LOW", "t")], requires_approval=True)}
+    fake = make_fake(str(tmp_path / "bin"), {"rules": [rule]})
+    _ctx, registered = ctx_factory(path=fake)
+    assert pre(registered, f"cd {tmp_path}", call_id="b1") is None
+    message = pre(registered, "make deploy", call_id="b2")["message"]
+    assert "Your tirith policy requires approval for it there: [LOW] t (x)." in message
+
+
+def test_pending_cd_with_a_failed_check_asks_with_the_real_reason(tmp_path, ctx_factory):
+    broken = make_fake(str(tmp_path / "bin"), {"rules": [{"contains": "make", "rc": 101, "stdout": "panicked\n"}]})
+    _ctx, registered = ctx_factory(path=broken)
+    assert pre(registered, f"cd {tmp_path}", call_id="b1") is None
+    directive = pre(registered, "make deploy", call_id="b2")
+    assert directive["action"] == "approve" and directive["rule_key"].startswith("tirith:error:exit_code:")
+    assert "exited with code 101" in directive["message"]
 
 
 @pytest.mark.parametrize(
