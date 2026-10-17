@@ -13,13 +13,12 @@ import json
 import logging
 import math
 import os
-import re
 import sys
 import time
 from collections.abc import Mapping
 from typing import Any
 
-from . import _decide, _input, _locate, _scan, _settings, _state
+from . import _cd, _decide, _input, _locate, _scan, _settings, _state
 from ._version import PLUGIN_VERSION
 
 __version__ = PLUGIN_VERSION
@@ -116,26 +115,13 @@ def terminal_command(args: Any) -> str | None:
     return command if isinstance(command, str) and command.strip() else None
 
 
-# A command word that can move the shell to another directory: cd, pushd, popd, or a sourced script,
-# also after NAME=value assignments and the builtin, command [-p] and eval prefixes. It is matched in
-# the text with quotes and backslashes removed, since bash runs 'cd', "cd", \cd, c\d, $'cd' and
-# eval "cd x" as cd too. A function, alias or variable that changes directory under another name is
-# not recognised (README, Limits).
-_DIRECTORY_CHANGE = re.compile(
-    r"(?:^|[;&|(){}`!\n]|\b(?:then|do|else|elif|if|while|until|time)\s)"
-    r"\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
-    r"(?:(?:builtin|command|eval)(?:\s+-\S*)*\s+)*"
-    r"(?:cd|pushd|popd|source|\.)(?=$|[\s;&|)`])"
-)
-_QUOTED_ASSIGNMENT = re.compile(r"""([A-Za-z_][A-Za-z0-9_]*=)(?:'[^']*'|"(?:[^"\\]|\\.)*")+""")
-_DOLLAR_QUOTE = re.compile(r"""\$(?=['"])""")
-_UNQUOTE = str.maketrans("", "", "\\'\"")
-
-
+@functools.lru_cache(maxsize=256)
 def _moves_directory(command: str) -> bool:
-    """Whether ``command`` may change the shell's directory (a heuristic; see ``_DIRECTORY_CHANGE``)."""
-    text = _QUOTED_ASSIGNMENT.sub(r"\1x", command)  # ``X="a b" cd``: one assignment
-    return bool(_DIRECTORY_CHANGE.search(_DOLLAR_QUOTE.sub("", text).translate(_UNQUOTE)))
+    """Whether ``command`` may change the shell's directory (a heuristic; see ``_cd``).
+
+    Hermes Desktop checks every pending earlier command again for each later one: cached.
+    """
+    return _cd.moves_directory(command)
 
 
 _CWD_PENDING = (

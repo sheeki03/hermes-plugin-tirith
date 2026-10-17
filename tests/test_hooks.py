@@ -1560,6 +1560,31 @@ def test_workdir_wins_and_is_not_recorded(hooks, fake, tmp_path):
         ("\\builtin cd /tmp", True),
         ("eval builtin cd /tmp", True),
         ('"source" env.sh', True),
+        ("time -p cd /tmp", True),
+        ("time -- cd /tmp", True),
+        (">/dev/null cd /tmp", True),
+        ("2>/dev/null cd /tmp", True),
+        ("cd>/dev/null /tmp", True),
+        ("cd</dev/null /tmp", True),
+        ("eval X=1 cd /tmp", True),
+        ("$'\\x63d' /tmp", True),
+        ("$'\\143d' /tmp", True),
+        ("c''d /tmp", True),
+        ("builtin -- cd /tmp", True),
+        ("command -- cd /tmp", True),
+        ("exec 3>&1; cd /tmp", True),
+        ("case a in a) cd /tmp;; esac", True),
+        ("function f { cd /tmp; }", True),
+        ("x=$(pwd) cd /tmp", True),
+        ("echo 'a|cd'", False),
+        ('echo "; cd /tmp"', False),
+        ("command -v cd", False),
+        ("command -V cd", False),
+        ("printf '%s\\n' cd", False),
+        ("bash -c 'cd /tmp'", False),
+        ("exec cd /tmp", False),
+        ("ls ./cd", False),
+        ("Build with `cargo build`.", False),
         ("ls .", False),
         ("git add .", False),
         ("find . -name x", False),
@@ -1639,7 +1664,21 @@ def test_pending_cd_with_a_failed_check_asks_with_the_real_reason(tmp_path, ctx_
 
 
 @pytest.mark.parametrize(
-    "move", ["\\cd {}", "'cd' {}", "c\\d {}", 'eval "cd {}"', "CDPATH=/ cd {}", "command -p cd {}", "builtin cd {}"]
+    "move",
+    [
+        "\\cd {}",
+        "'cd' {}",
+        "c\\d {}",
+        'eval "cd {}"',
+        "CDPATH=/ cd {}",
+        "command -p cd {}",
+        "builtin cd {}",
+        ">/dev/null cd {}",
+        "cd>/dev/null {}",
+        "time -p cd {}",
+        "$'\\x63d' {}",
+        "eval X=1 cd {}",
+    ],
 )
 def test_batched_command_after_a_differently_spelled_cd_asks(hooks, tmp_path, move):
     _ctx, registered = hooks
@@ -1650,7 +1689,8 @@ def test_batched_command_after_a_differently_spelled_cd_asks(hooks, tmp_path, mo
 
 def test_batched_commands_without_a_directory_change_run(hooks):
     _ctx, registered = hooks
-    for index, command in enumerate(("ls -la", "git status", "cat README.md", "git add .")):
+    commands = ("ls -la", "git status", "cat README.md", "git add .", "echo 'a|cd'", 'echo "; cd x"', "command -v cd")
+    for index, command in enumerate(commands):
         assert pre(registered, command, call_id=f"b{index}") is None
 
 

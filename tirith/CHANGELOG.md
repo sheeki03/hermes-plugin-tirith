@@ -21,10 +21,12 @@ Fixes from the review of 0.1.0:
   final `\` or trailing `|`, or text typed on the line) and goes through otherwise.
 - When tirith reports `analysis_incomplete` for a background line that runs, the next line is checked
   together with it, in case the shell still reads the two as one command for a reason the plugin misses.
-- Hermes Desktop batches: an earlier, not yet run command spelled `\cd`, `'cd'`, `"cd"`, `c\d`, `$'cd'`,
-  `eval cd ...` or `eval "cd ..."`, `command [-p] cd`, or `cd` after `NAME=value` assignments, now counts as a
-  possible directory change, like `cd` and `builtin cd` already did, so the later command asks instead of
-  being checked silently under the old directory's policy.
+- Hermes Desktop batches: the plugin now finds each command's command word the way bash does. An
+  earlier, not yet run command spelled `\cd`, `'cd'`, `"cd"`, `c\d`, `$'cd'` or `$'\x63d'`, run through
+  `eval`, `command [-p]`, `builtin` or `time -p`, or written after `NAME=value` assignments or
+  redirections (`>/dev/null cd`, `cd>/dev/null`), now counts as a possible directory change, like `cd`
+  and `builtin cd` already did, so the later command asks instead of being checked silently under the
+  old directory's policy. `echo 'a|cd'`, `echo "; cd x"` and `command -v cd` do not count.
 - The directory a task moved to is kept while the task is in use. It was dropped once 512 other tasks
   had reported a directory change, even if the task was still running commands, which were then checked
   in `TERMINAL_CWD` or Hermes's own directory under the wrong repository policy. Each check now counts as

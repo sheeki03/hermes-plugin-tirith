@@ -185,12 +185,13 @@ Hermes 0.21.4 and earlier are not supported: there a crashing or slow plugin let
 - Hermes Desktop asks about adjacent terminal commands together: it checks all of them before the
   first one runs, so a later command is checked before an earlier `cd` has moved the directory. When
   an earlier command of the same task that has not run yet contains `cd`, `pushd`, `popd`, `source`
-  or `.` as a command (also quoted or escaped, as in `'cd'` or `\cd`, after `NAME=value` assignments,
-  or after `builtin`, `command` or `eval`), a later command without an absolute `workdir` is still
-  checked in the directory known so far and then asks (refused in unattended runs): its repository
-  policy may not be the one that applies. The prompt says so and shows tirith's verdict in the
-  directory known so far; a refusal there stays a refusal. A directory change inside a function, alias
-  or script with another name, or one built from a variable (`$CMD /tmp`, `eval "$x"`), is not noticed.
+  or `.` as a command (also quoted or escaped, as in `'cd'`, `\cd` or `$'\x63d'`, after `NAME=value`
+  assignments or redirections, or after `builtin`, `command`, `eval` or `time`), a later command
+  without an absolute `workdir` is still checked in the directory known so far and then asks (refused
+  in unattended runs): its repository policy may not be the one that applies. The prompt says so and
+  shows tirith's verdict in the directory known so far; a refusal there stays a refusal. A directory
+  change inside a function, alias or script with another name, one built from a variable (`$CMD /tmp`,
+  `eval "$x"`), or one made by brace or glob expansion (`{cd,} /tmp`), is not noticed.
 - Another plugin can change a command after tirith checked it (a `modify` directive). The plugin notices
   afterwards and logs a warning; it cannot check the changed command. Another plugin's tool-execution
   middleware can also replace the command after the check, and that change cannot be noticed at all:

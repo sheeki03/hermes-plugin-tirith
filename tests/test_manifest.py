@@ -60,6 +60,7 @@ def test_licence_is_shipped_with_the_plugin():
 def test_installed_tree_has_only_runtime_files():
     allowed = {
         "__init__.py",
+        "_cd.py",
         "_decide.py",
         "_input.py",
         "_locate.py",
