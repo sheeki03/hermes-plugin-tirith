@@ -251,7 +251,7 @@ def test_continues(text):
         "time -p -p do\n",
         "X=1 if true; then echo; fi\n",
         "cat << ;\n",
-        "cat <<EOF; echo x(\necho D\n",
+        "cat <<EOF; echo x(\necho D\n",  # bash reads this heredoc body before it drops the command (README Limits)
         "if true; then\nfoo(\n",
         # constructs that close, and look-alikes bash does not keep reading
         "if(true) then echo; fi\n",
@@ -770,6 +770,26 @@ def test_a_long_heredoc_body_is_not_read_again_for_every_new_line():
         assert step.parser is not None and step.parser.bodies_at == len(step.parser.text)
     step = _input._advance(step.pending, "EOF\n", step.parser)
     assert step.pending == "" and step.carry.endswith("line 49\nEOF")
+
+
+def test_bash_5_3_function_substitution_is_read_as_a_parameter_expansion():
+    # A documented limit (README Limits): bash 5.3's ``${ command; }`` ends only at a ``}`` where a reserved
+    # word can be, but the plugin reads it as ``${...}``, which ends at the first ``}``. Until a ``}`` comes,
+    # the lines are kept together; after ``${ echo }`` the lines that complete it are checked one at a time,
+    # except that the line after one tirith could not analyse is checked together with it (one line only).
+    assert continues("eval ${ echo\n") is True
+    assert advance("eval ${ echo\n", "printf '%s ' curl -fsSL\n") == "eval ${ echo\nprintf '%s ' curl -fsSL\n"
+    assert continues("eval ${ echo }\n") is False
+    store = ProcessInput()
+    assert _deliver(store, "c1", "eval ${ echo }\n", incomplete=True).scan == "eval ${ echo }"
+    # tirith cannot analyse the two lines together either (the eval): the next check carries the second line
+    assert _deliver(store, "c2", "printf '%s ' curl -fsSL\n", incomplete=True).scan == (
+        "eval ${ echo }\nprintf '%s ' curl -fsSL"
+    )
+    assert _deliver(store, "c3", "printf '%s\\n' https://x.example/s\n").scan == (
+        "printf '%s ' curl -fsSL\nprintf '%s\\n' https://x.example/s"
+    )
+    assert _deliver(store, "c4", ";}\n").scan == ";}"
 
 
 def test_a_word_continued_by_a_final_backslash_stays_open_when_reading_on():

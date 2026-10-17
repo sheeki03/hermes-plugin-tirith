@@ -210,11 +210,21 @@ Hermes 0.21.4 and earlier are not supported: there a crashing or slow plugin let
   something else for it: an alias, function or history entry set up earlier (also one that opens a
   construct, such as `alias q='bash -c $('`, which the plugin does not follow), or a script written with
   a file tool. zsh, fish and dash read some input differently (zsh allows parentheses inside words).
+- bash 5.3's `${ command; }` and `${| command; }` are read as a `${...}` expansion, which ends at the
+  first `}`. When the first `}` does not close it (in `eval ${ echo }` it is an argument of `echo`), the
+  lines that complete it are checked one at a time (the line after one tirith could not analyse is
+  still checked with it). Until the first `}` comes, the lines are kept together.
+- After a syntax error, bash sometimes reads on before it drops the command: the body of a heredoc
+  opened earlier on the line (`: <<E )`), or one more token. The plugin drops the command at once, so it
+  checks those lines as new commands even though they never run, and it can keep a later line together
+  with them. In the cases tested this only added prompts.
 - Input for a program that is not a shell (a Python or Node REPL, `cat > file`, anything that reads its
   input) is checked as shell text. Most of its lines are checked one at a time, as in 0.1.0, but a line
   that looks like the start of an unfinished shell command is checked together with the lines after
   it: for at most 32 lines when only reserved words keep it open (Python's `if x:`), and until it
-  closes otherwise (an apostrophe in prose opens a quote).
+  closes otherwise (an apostrophe in prose opens a quote). A line tirith cannot analyse that runs (a
+  Node template literal such as `` `${a}-${b}` ``) makes the next line ask too: the next line is
+  checked together with it.
 - A command held open only by reserved words, or by a heredoc whose delimiter does not start with a
   letter, is checked line by line after 32 lines (64 KiB). Padding a loop body past that can hide how a
   later line combines with the start of the loop. The line after one tirith could not analyse is checked

@@ -270,7 +270,8 @@ class _Continuation:
     an interactive bash drop the whole command (``foo(``, a stray ``fi`` or ``)``, a ``for`` header not
     followed by ``do``, a function body that is not a compound command). Reserved words count only where
     a command starts. It is not a parser: a construct it wrongly keeps open only means later lines are
-    checked together with earlier ones.
+    checked together with earlier ones, but one it wrongly closes splits a command. bash 5.3's
+    ``${ cmd; }`` is such a case: it is read as ``${...}``, which ends at the first ``}`` (README Limits).
     """
 
     def __init__(self, text: str):
