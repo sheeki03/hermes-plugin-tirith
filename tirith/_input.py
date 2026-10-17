@@ -238,6 +238,7 @@ class _Grammar:
     word_command: bool = False  # the current word started where a command starts
     word_plain: bool = True  # no quotes, escapes or expansions: it can be a reserved word
     word_assign: bool = False  # the current word is where an assignment can be (``a[`` opens a subscript)
+    not_name: bool = False  # the current word is known not to be a plain name (see ``_word_is_name``)
     assigning: bool = False  # only assignments so far in this command
     name: bool = False  # the last word was a plain word where a command starts: ``name ()`` defines a function
     case_words: int = 0  # after ``case``: 2 = its word comes next, 1 = ``in`` comes next
@@ -284,7 +285,7 @@ class _Continuation:
         self.error = False  # a syntax error on this line: bash drops the command
         self.escaped_end = False
         self.open_word = False  # a heredoc delimiter that is still being read
-        self.bodies_at: int | None = None  # where an unfinished heredoc body starts
+        self.bodies_at: int | None = None  # the first line of an unfinished heredoc body not read yet
         self.end = 0  # how far the text has been read (see ``resume``)
         self.start = 0
         self.done: tuple[int, int] | None = None
@@ -297,6 +298,7 @@ class _Continuation:
             g.word_command = g.command
             g.word_assign = g.command or g.assigning
             g.word_plain = True
+            g.not_name = False
             g.command = False
             g.name = False
 
@@ -661,7 +663,7 @@ class _Continuation:
             g.word_plain = False
             g.word.append(char)
             stack.append("${" if char == "{" else "]")
-        elif char == "[" and g.word_assign and g.word_plain and _NAME.fullmatch("".join(g.word)):
+        elif char == "[" and g.word_assign and g.word_plain and self._word_is_name():
             # ``a[`` where an assignment can be: bash reads the subscript up to its ``]``, over lines too
             g.word.append(char)
             stack.append("]")
@@ -752,10 +754,29 @@ class _Continuation:
         self._syntax_error()  # no ``(`` is open here
         return index + 1
 
+    # Neither helper joins the whole word for every ``{`` or ``[``: on a long word of them (a minified JSON
+    # line) that cost grew with the square of the word's length, inside the post hook's lock.
+
     def _expansion_opens(self) -> bool:
         """Whether ``{`` or ``[`` here opens ``${``/``$[``: the word ends in an odd run of ``$``."""
-        word = "".join(self.g.word)
-        return (len(word) - len(word.rstrip("$"))) % 2 == 1
+        dollars = 0
+        for part in reversed(self.g.word):  # only the parts in the trailing run of ``$``
+            rest = part.rstrip("$")
+            dollars += len(part) - len(rest)
+            if rest:
+                break
+        return dollars % 2 == 1
+
+    def _word_is_name(self) -> bool:
+        """Whether the current word is a plain name, as ``a`` in ``a[`` (also ``a\\<newline>b[``, which is
+        two parts). A word that is not a name never becomes one as it grows, which is remembered."""
+        g = self.g
+        if g.not_name:
+            return False
+        if _NAME.fullmatch("".join(g.word)):
+            return True
+        g.not_name = True
+        return False
 
     # -- lines --
 
@@ -818,9 +839,11 @@ class _Continuation:
         """Skip the bodies of the heredocs opened on the line that just ended; None if one is unfinished."""
         text, size = self.text, len(self.text)
         while self.heredocs:
-            self.bodies_at = index  # read again from here when more text comes
             word, strip_tabs, _named = self.heredocs[0]
             while True:
+                # Read on from here when more text comes: the body lines before it did not end the heredoc,
+                # so a long body is not read again for every new line.
+                self.bodies_at = index
                 if index >= size:
                     return None
                 end = text.find("\n", index)

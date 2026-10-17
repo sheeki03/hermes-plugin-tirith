@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -148,6 +149,8 @@ def test_control_keys(text, expected):
         "a[\n",
         "a[$(\n",
         "X=1 b[\n",
+        "a\\\nb[\n",  # ``a\<newline>b`` is the one word ``ab``, a name: the subscript opens
+        "ca\\\nse x in\n",  # ... and ``ca\<newline>se`` is ``case``
         "echo ${x:-<(\n",
         "bash -c $(case x in $(echo x)) \n",
         "if x:\n    y = 2\nelse:\n",  # bash keeps reading Python's if too
@@ -746,3 +749,22 @@ def test_reading_on_from_the_last_step_matches_reading_everything_again(seed):
             step = _input._advance(pending, keys, parser)
             assert (step.pending, step.completed, step.carry) == (fresh.pending, fresh.completed, fresh.carry), text
             pending, parser = step.pending, step.parser
+
+
+def test_a_long_word_of_braces_or_brackets_is_read_in_linear_time():
+    # Each ``{`` or ``[`` used to join the whole word read so far: a 64 KiB word took close to a minute,
+    # inside the post hook's lock. A minified JSON line typed raw is such a word.
+    for text in ("x" + "{" * 65536 + "\n", "x=" + "[" * 65536 + "\n", "a" + "[" * 65536 + "\n"):
+        started = time.perf_counter()
+        assert advance("", text) in ("", text)
+        assert time.perf_counter() - started < 5, text[:8]
+
+
+def test_a_long_heredoc_body_is_not_read_again_for_every_new_line():
+    # Reading on starts at the first body line not read yet, not at the start of the body.
+    step = _input._advance("", "cat <<EOF\n")
+    for index in range(50):
+        step = _input._advance(step.pending, f"line {index}\n", step.parser)
+        assert step.parser is not None and step.parser.bodies_at == len(step.parser.text)
+    step = _input._advance(step.pending, "EOF\n", step.parser)
+    assert step.pending == "" and step.carry.endswith("line 49\nEOF")
