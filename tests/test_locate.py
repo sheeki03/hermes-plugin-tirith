@@ -225,6 +225,26 @@ def test_gate_with_no_time_left_runs_nothing_and_is_not_kept(tmp_path, env):
     assert locator.check(fake, env, TEST_TIMEOUT).ok and len(seen) == 3  # the next call gates afresh
 
 
+def test_a_gate_step_cut_short_by_the_deadline_is_not_kept(tmp_path, env):
+    # The binary did not get its full time, so a timeout says nothing about it: the next call gates again.
+    seen: list[float] = []
+
+    def slow_probe(argv, stdin, cwd, run_env, timeout):
+        seen.append(timeout)
+        if PROBE_FLAG in argv:
+            return RunResult(rc=None, timed_out=True)
+        return _answering_runner([])(argv, stdin, cwd, run_env, timeout)
+
+    fake = make_fake(str(tmp_path / "b"))
+    locator = Locator(runner=slow_probe)
+    deadline = time.monotonic() + _scan.KILL_GRACE + 2.0  # less than the probe's own 10 s timeout
+    result = locator.check(fake, env, TEST_TIMEOUT, deadline=deadline)
+    assert result.status == "timeout" and "did not answer before Hermes's hook time limit" in result.reason
+    assert seen[1] < _locate.PROBE_TIMEOUT
+    assert locator.check(fake, env, TEST_TIMEOUT).status == "error"  # not kept: gated again, full time
+    assert len(seen) == 4 and seen[3] == min(_locate.PROBE_TIMEOUT, TEST_TIMEOUT)
+
+
 def test_a_caller_queued_behind_a_failing_gate_gets_its_answer_at_once(tmp_path, env):
     release = threading.Event()
     count: list[float] = []

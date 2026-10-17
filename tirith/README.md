@@ -66,7 +66,8 @@ The first check runs three quick tirith commands to make sure the binary speaks 
 `tirith check` on `echo tirith-hermes-plugin-contract-check` (the verdict must say whether the command
 needs approval). A tirith that fails this, including a pre-release build without the approval field,
 counts as older than 0.5.0. The result is kept until the binary changes (a refusal for a minute, a
-failed attempt for 5 seconds, so calls queued behind a broken binary do not each wait for it again).
+failed attempt for 5 seconds, so calls queued behind a broken binary do not each wait for it again; an
+attempt stopped only by the hook time limit below is not kept).
 
 Hermes stops waiting for a plugin after `plugins.hook_callback_timeout` (30 s by default), blocks the
 command, and then skips the plugin for 60 seconds, which blocks every tool. So each hook call, including

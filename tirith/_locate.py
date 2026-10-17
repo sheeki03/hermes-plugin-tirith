@@ -173,14 +173,15 @@ def _too_old(path: str, version: str, detail: str) -> GateResult:
     )
 
 
-def _no_time(path: str, version: str = "") -> GateResult:
+def _no_time(path: str, version: str = "", *, started: bool = False) -> GateResult:
+    """The gate ran out of the hook call's time (not kept: the binary may answer given its full time)."""
+    detail = "it did not answer before" if started else "no time was left within"
     return GateResult(
         "timeout",
         path=path,
         version=version,
         reason=(
-            f"tirith at {path} could not be checked: no time was left within Hermes's hook time limit "
-            "(plugins.hook_callback_timeout)"
+            f"tirith at {path} could not be checked: {detail} Hermes's hook time limit (plugins.hook_callback_timeout)"
         ),
     )
 
@@ -195,7 +196,8 @@ def gate(
     """Run ``--version``, the capability probe and the contract check against one binary.
 
     The steps share ``GATE_BUDGET`` and all end by ``deadline`` (``time.monotonic()``, the end of the
-    hook call's time), whichever comes first. With no time left for a step: status ``timeout``.
+    hook call's time), whichever comes first. With no time left for a step, or when a step that the
+    deadline cut short times out: status ``timeout``, which the Locator does not keep.
     """
     run = runner or _scan.run
     if not _executable(path):
@@ -203,9 +205,18 @@ def gate(
     cwd = tempfile.gettempdir()
     gate_deadline = time.monotonic() + GATE_BUDGET
 
+    cut = [False]  # the last step's timeout was shortened by the deadline
+
     def step(argv: list[str], stdin: bytes, limit: float) -> _scan.RunResult | None:
-        allowed = _scan.time_left(deadline, max(0.1, min(limit, timeout, gate_deadline - time.monotonic())))
+        own = max(0.1, min(limit, timeout, gate_deadline - time.monotonic()))
+        allowed = _scan.time_left(deadline, own)
+        cut[0] = allowed is not None and allowed < own
         return None if allowed is None else run(argv, stdin, cwd, env, allowed)
+
+    def timed_out(version: str, reason: str) -> GateResult:
+        if cut[0]:
+            return _no_time(path, version, started=True)
+        return GateResult("error", path=path, version=version, reason=reason)
 
     version_run = step([path, "--version"], b"", VERSION_TIMEOUT)
     if version_run is None:
@@ -213,7 +224,7 @@ def gate(
     if version_run.error:
         return GateResult("error", path=path, reason=f"tirith at {path} could not be started")
     if version_run.timed_out:
-        return GateResult("error", path=path, reason=f"tirith at {path} did not answer --version in time")
+        return timed_out("", f"tirith at {path} did not answer --version in time")
     parsed, version = _parse_version(version_run.stdout.decode("utf-8", errors="replace"))
 
     probe = step([path, *_scan.CHECK_ARGV, PROBE_FLAG], b"true\n", PROBE_TIMEOUT)
@@ -222,7 +233,7 @@ def gate(
     if probe.error:
         return GateResult("error", path=path, version=version, reason=f"tirith at {path} could not be started")
     if probe.timed_out:
-        return GateResult("error", path=path, version=version, reason=f"tirith at {path} did not answer in time")
+        return timed_out(version, f"tirith at {path} did not answer in time")
     swallowed = probe.rc == 0 or _scan.parse_verdict(probe.stdout.decode("utf-8", errors="replace")) is not None
     if swallowed:
         return _too_old(path, version, "it can mis-read a check request and miss attacks")
@@ -245,7 +256,7 @@ def gate(
     if contract.error:
         return GateResult("error", path=path, version=version, reason=f"tirith at {path} could not be started")
     if contract.timed_out:
-        return GateResult("error", path=path, version=version, reason=f"tirith at {path} did not answer in time")
+        return timed_out(version, f"tirith at {path} did not answer in time")
     verdict = _scan.parse_verdict(contract.stdout.decode("utf-8", errors="replace"))
     if verdict is None:
         return GateResult(

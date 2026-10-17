@@ -1242,10 +1242,11 @@ def test_a_hung_tirith_on_the_first_call_asks_inside_the_hook_limit(tmp_path, ct
     elapsed = time.monotonic() - started
     assert directive["action"] == "approve" and directive["rule_key"].startswith("tirith:error:"), directive
     assert elapsed < limit - plugin.HOOK_MARGIN + 1.0, elapsed
-    # the next callers get that answer at once instead of each waiting for the binary again
+    # stopped only by the hook limit, the binary did not get its full time: that answer is not kept, so the
+    # next caller tries again, and it too asks inside the limit
     started = time.monotonic()
     assert pre(registered, "git status", call_id="call-2")["action"] == "approve"
-    assert time.monotonic() - started < 2.0
+    assert time.monotonic() - started < limit - plugin.HOOK_MARGIN + 1.0
 
 
 def test_a_slow_check_is_cut_to_what_is_left_of_the_hook_limit(tmp_path, ctx_factory, monkeypatch):

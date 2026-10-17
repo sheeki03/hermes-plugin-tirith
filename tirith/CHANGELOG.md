@@ -42,7 +42,8 @@ Fixes from the review of 0.1.0:
   plugin for 60 s, which blocked every tool. The startup check of every candidate binary and the check
   now share one deadline 5 s before the limit, including the time spent waiting for another call's
   startup check; a check stopped there asks, like any failed check. A failed startup check is kept for
-  5 s, so calls queued behind a broken binary get the answer at once.
+  5 s, so calls queued behind a broken binary get the answer at once; one that only ran out of the hook
+  call's time is not kept, and the next call gives the binary its full time again.
 - The `timeout` setting warns above 12 s (it warned above 25 s), and also when it does not fit the hook
   limit Hermes is configured with.
 - tirith 0.5.0 reports `package_lookup_incomplete` (MEDIUM) when its live package lookups cannot finish:
