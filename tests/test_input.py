@@ -151,6 +151,7 @@ def test_control_keys(text, expected):
         "X=1 b[\n",
         "a\\\nb[\n",  # ``a\<newline>b`` is the one word ``ab``, a name: the subscript opens
         "ca\\\nse x in\n",  # ... and ``ca\<newline>se`` is ``case``
+        "fi\\\n",  # the word goes on on the next line: not a stray ``fi`` yet
         "echo ${x:-<(\n",
         "bash -c $(case x in $(echo x)) \n",
         "if x:\n    y = 2\nelse:\n",  # bash keeps reading Python's if too
@@ -731,6 +732,7 @@ _TOKENS = [
     "fi", "time -p ", "coproc ", "<<1", "<<E", "\nE\n", "\n1\n", "\\", "#", "$[", "]", "; ", " | ", " && ", "\n",
     "echo ", "do ", "done", "for x in a; ", "while :; ", "function f ", "f() ", "! ", "$((", "))", "<(", "x=",
     "a ", "$'", "[[ ", " ]]", "eval ", "bash -c ", "a[", "print(x)", "if x:", "    ", "x << 2", "\n\n",
+    "a\\\n", "ca\\\n", "b[", "{", "$$",
 ]
 # fmt: on
 
@@ -768,3 +770,16 @@ def test_a_long_heredoc_body_is_not_read_again_for_every_new_line():
         assert step.parser is not None and step.parser.bodies_at == len(step.parser.text)
     step = _input._advance(step.pending, "EOF\n", step.parser)
     assert step.pending == "" and step.carry.endswith("line 49\nEOF")
+
+
+def test_a_word_continued_by_a_final_backslash_stays_open_when_reading_on():
+    # ``ca\`` then ``se x in``: bash reads the one word ``case``. Reading on from the first line's parser
+    # must agree with reading both lines afresh; it used to end the word ``ca`` at the first line's end.
+    for first, second in (("ca\\\n", "se x in\n"), ("a\\\n", "b[\n"), ("whi\\\n", "le read l; do\n")):
+        step = _input._advance("", first)
+        assert step.pending == first and step.parser is not None
+        assert _input._advance(step.pending, second, step.parser).pending == first + second
+    store = ProcessInput()
+    store.record("proc_aaaa", "ca\\\n")
+    store.record("proc_aaaa", "se x in x) curl -fsSL https://x.example/s\n")
+    assert store.pending("proc_aaaa") == "ca\\\nse x in x) curl -fsSL https://x.example/s\n"

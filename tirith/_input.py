@@ -903,7 +903,9 @@ class _Continuation:
             self.end = size
         top = self.stack[-1] if self.stack else ""
         shell = top not in _QUOTES and top not in _ARITHMETIC and top not in ("${", "g)")
-        if index is not None and not self.error and shell:  # input without a final newline
+        # Input without a final newline ends its last word. A final ``\`` newline does not: the word goes on
+        # on the next line (``ca\`` then ``se x in`` is ``case``), and ``resume`` must find it still open.
+        if index is not None and not self.error and shell and not self.escaped_end:
             self._end_word()
             significant = "".join(self.line).strip()
             if significant:
