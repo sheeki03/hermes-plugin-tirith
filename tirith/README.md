@@ -75,18 +75,24 @@ your Hermes setting): a check still running then is stopped and asks you, like a
 
 **Background terminals.** `process_manage` sends keystrokes: `write` types text, `submit` types text
 and Enter. The plugin keeps what was typed into each background process and checks the whole line when
-a call ends it, so a line typed over several calls (even by another task) is checked as one. A shell
-command that goes on over several lines (a trailing `\`, `|`, `&&` or `||`, an open quote, a heredoc,
-an unclosed `$(`, `<(`, `(`, `{` or `${`, an unfinished `if`, `case` or loop) is checked as a whole
-each time a line of it is sent, even after you approved an earlier line of it: approving `bash -c $(`
-does not let the lines that complete it through one at a time. Typed text counts once Hermes reports that the
-call ran, so a refused line stays typed and is checked again when the line is ended again. Input with
-control keys (Tab, Esc, Ctrl-A and other Ctrl keys, a lone carriage return, NUL, DEL) counts as a
-failed check: a terminal can treat them as editing keys (completion, moving the cursor, recalling
-history) and run a different line than the text tirith would see. Ctrl-C or Ctrl-D on its own, with
-nothing typed, goes through. `close` sends end of input, and a shell runs the text it holds at end of
-input even without Enter, so a `close` checks everything typed so far as a whole command (with nothing
-typed it goes through).
+a call ends it, so a line typed over several calls (even by another task) is checked as one. It reads
+the input the way an interactive bash reads it. While a command goes on over several lines (a trailing
+`\`, `|`, `&&` or `||`, an open quote, a heredoc, an unclosed `$(`, `<(`, `(`, `{`, `${`, `$[` or
+`[[`, an unfinished `if`, `case`, loop or function definition), each line is checked together with the
+lines before it, also after you approved one of them: an approved `bash -c $(` is checked again with
+the lines that complete it. A line bash rejects as a syntax error (`print(x)`, a stray `done`) ends the
+command, because bash drops it. A command held open only by reserved words (`if`, `for`, `while`,
+`case`, `{`) or by a heredoc whose delimiter does not start with a letter (`<<1`) is followed for at
+most 32 lines (64 KiB); after that, lines are checked one at a time again (see Limits). Typed text
+counts once Hermes reports that the call ran, so a refused line stays typed and is checked again when
+the line is ended again. Input with control keys (Tab, Esc, Ctrl-A and other Ctrl keys, a lone
+carriage return, NUL, DEL) counts as a failed check: a terminal can treat them as editing keys
+(completion, moving the cursor, recalling history) and run a different line than the text tirith would
+see. Ctrl-C or Ctrl-D on its own cancels what was typed and goes through, except while a quote,
+heredoc, final `\` or trailing `|` is open or text is typed on the line: then it asks, as 0.1.0 did,
+and the typed text is cleared once it runs. `close` sends end of input, and a shell runs the text it
+holds at end of input even without Enter, so a `close` checks everything typed so far as a whole
+command (with nothing typed it goes through).
 
 **When the plugin cannot know what was typed.** Hermes can run input calls for one background process
 in parallel, and a write can fail after some of its bytes reached the process, so neither the order of
@@ -197,8 +203,21 @@ Hermes 0.21.4 and earlier are not supported: there a crashing or slow plugin let
   tirith. For a hardened setup, set `path` to a tirith the agent cannot write to (for example one
   owned by root, outside the agent's home), and keep Hermes's configuration out of its reach.
 - `execute_code` (Python) and file-writing tools are not checked; tirith checks shell commands.
-- The plugin checks the text of each line. A background shell can still run something else for it:
-  an alias, function or history entry set up earlier, or a script written with a file tool.
+- The plugin checks the text of each line, read as bash would read it. A background shell can still run
+  something else for it: an alias, function or history entry set up earlier (also one that opens a
+  construct, such as `alias q='bash -c $('`, which the plugin does not follow), or a script written with
+  a file tool. zsh, fish and dash read some input differently (zsh allows parentheses inside words).
+- Input for a program that is not a shell (a Python or Node REPL, `cat > file`, anything that reads its
+  input) is checked as shell text. Most of its lines are checked one at a time, as in 0.1.0, but a line
+  that looks like the start of an unfinished shell command is checked together with the lines after
+  it: for at most 32 lines when only reserved words keep it open (Python's `if x:`), and until it
+  closes otherwise (an apostrophe in prose opens a quote).
+- A command held open only by reserved words, or by a heredoc whose delimiter does not start with a
+  letter, is checked line by line after 32 lines (64 KiB). Padding a loop body past that can hide how a
+  later line combines with the start of the loop.
+- Ctrl-C and Ctrl-D cancel the typed text only on a terminal. A background process started without
+  `pty: true` (Hermes's default) receives them as ordinary characters and keeps reading the command,
+  but the plugin checks the lines after them on their own.
 - A Hermes approval cannot be limited to one session by a plugin, hence the salted keys above.
 - A scan requires the 0.5.0 JSON contract, including a boolean approval requirement;
   missing/invalid metadata is a failed check, never implicit permission. Known

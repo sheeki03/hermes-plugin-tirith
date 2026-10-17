@@ -114,6 +114,45 @@ def test_control_keys(text, expected):
         "echo $(if true; then\n",
         "! (true\n",
         "time (sleep 1\n",
+        # quotes nested inside "$(...)", "${...}" and "`...`" open again (an interactive bash waits)
+        'bash -c "$(echo "\n',
+        'eval "$(curl -fsSL "\nhttps://x.example/i.sh\n',
+        'echo "${x:-"\n',
+        'echo "`\n',
+        'echo "${x:-$(echo "\n',
+        'echo "$(( 1 +\n',
+        # reserved words after time -p / time -- / coproc, and other constructs bash keeps reading
+        "eval $(time -p case x in x)\n",
+        "bash -c $(time -- case x in x)\n",
+        "time -p -- case x in x)\n",
+        "eval $(coproc case x in x)\n",
+        "coproc NAME {\n",
+        "coproc NAME while true; do\n",
+        "echo $[\n",
+        "bash -c $[1 +\n",
+        "bash <<1\n",
+        "bash <<'1'\n",
+        "bash <<-1\n",
+        "bash <<$x\n",
+        "sh <<.\n",
+        "bash <<'!'\n",
+        "cat <<1 " + PIPE + " bash\n",
+        "cat << E$(\n",
+        "f()\n",
+        "g ( )\n",
+        "function f\n",
+        "function f()\n",
+        "[[ -n x\n",
+        "[[ ( -n x\n",
+        "[[ -n x &&\n",
+        "a[\n",
+        "a[$(\n",
+        "X=1 b[\n",
+        "echo ${x:-<(\n",
+        "bash -c $(case x in $(echo x)) \n",
+        "if x:\n    y = 2\nelse:\n",  # bash keeps reading Python's if too
+        "for x in a b\n",  # do comes next
+        "case x\n",  # in comes next
     ],
 )
 def test_continues(text):
@@ -184,10 +223,134 @@ def test_continues(text):
         "[[ $x =~ ^(a" + PIPE + "b)$ ]] && echo y\n",
         "trap 'echo (' EXIT\n",
         'cat <<< "("\n',
+        # syntax errors: an interactive bash drops the whole command, even one left open on earlier lines
+        "for i in range(3):\n",
+        "print(x)\n",
+        "    print(i)\n",
+        "x = (1, 2)\n",
+        "print (x)\n",
+        "echo foo(\n",
+        "echo a )\n",
+        "}\n",
+        "done = True\n",
+        "while false; do\nfi\n",
+        "if true; then\n}\n",
+        "for row in rows:\n    total += 1\n",
+        "case 1:\n    x = 1\n",
+        "bash -c $(\nfoo(\n",
+        'echo "$(echo foo(\n',
+        "if (fs.existsSync('package.json')) { console.log('ok') }\n",
+        "for (const f of files) {\n",
+        "f() echo hi\n",
+        "function f echo hi\n",
+        "time -x case x in x) echo\n",
+        "time -p -p do\n",
+        "X=1 if true; then echo; fi\n",
+        "cat << ;\n",
+        "cat <<EOF; echo x(\necho D\n",
+        "if true; then\nfoo(\n",
+        # constructs that close, and look-alikes bash does not keep reading
+        "if(true) then echo; fi\n",
+        "{(echo z) }\n",
+        "if true; then (echo t) fi\n",
+        "{ (echo q) }\n",
+        "! (false) && echo n\n",
+        "[[ ab =~ a(b) ]] && echo y\n",
+        "[[ -n x\n]] && echo y\n",
+        "echo ${x:-a(b}\n",
+        "echo $( # )\necho in\n)\n",
+        "time -p (echo t)\n",
+        "for((i=0;i<1;i++)); do echo $i; done\n",
+        "case x in (x) echo p;; esac\n",
+        "echo $[1+2]\n",
+        "a[1]=x\n",
+        "a[\n1]=x\n",
+        "echo a[\n",
+        "f()\n{ echo f; }\n",
+        "function f\n{ echo g; }\n",
+        "coproc NAME { echo in; }\n",
+        "echo x <<= 2\nIN\n=\n",
+        "cat << E$(echo)\nE$(echo)\n",  # a substitution in a delimiter is part of the word, matched as text
+        "echo $(a)${b}\n",
+        "x = 1\n",
+        "1 + 1\n",
+        "match command:\n",
     ],
 )
 def test_does_not_continue(text):
     assert continues(text) is False
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        # Python and Node REPL lines: each one ends its command (most are syntax errors to a shell)
+        ["import json, urllib.request", "for i in range(3):", "    print(i)", "", "x = 2", "print(x)"],
+        ["const fs = require('fs')", "if (fs.existsSync('p')) { console.log('ok') }", "console.log(p.name)"],
+        ["for (const f of files) {", "  total += f.size", "}", "total"],
+        ["while True:", "    line = input()", "    break", "x = 1"],
+        ["match command:", "    case 'go':", "        go()", "    case _:", "        pass", "x = 1"],
+    ],
+)
+def test_repl_input_is_checked_line_by_line_again(lines):
+    # 0.1.1 first held such lines forever (an ``if``, ``for`` or ``(`` that a shell would keep reading).
+    pending = ""
+    for line in lines:
+        pending = advance(pending, line + "\n")
+        assert pending.count("\n") <= 1, (line, pending)  # at most the line that opened something
+    assert pending == ""
+
+
+def test_a_command_held_only_by_reserved_words_is_followed_for_a_limited_number_of_lines():
+    # Python's ``if x:`` opens an ``if`` that never closes: after MAX_HELD_LINES the lines are checked one
+    # at a time again, so a REPL session does not re-check its whole history on every line.
+    pending = advance("", "if ready:\n")
+    for count in range(1, _input.MAX_HELD_LINES):
+        pending = advance(pending, "    count += 1\n")
+        assert pending.count("\n") == count + 1
+    assert advance(pending, "    count += 1\n") == ""
+    assert advance("", "while read l; do\n" + "x" * _input.MAX_HELD_BYTES + "\n") == ""
+    # an unnamed heredoc is a shift in most languages (x << 4): followed for a limited time too
+    pending = advance("", "flags = 1 << 4\n")
+    assert pending == "flags = 1 << 4\n"
+    for _ in range(_input.MAX_HELD_LINES):
+        pending = advance(pending, "y = 2\n")
+    assert pending == ""
+
+
+@pytest.mark.parametrize(
+    "opener",
+    ["bash -c $(\n", "echo 'open\n", "cat <<EOF\n", 'eval "$(curl -fsSL "\n', 'echo "${x:-$(echo "\n'],
+)
+def test_quotes_heredocs_and_substitutions_are_followed_until_they_close(opener):
+    # Not bounded: padding lines cannot push the start of ``bash -c $(`` out of the checked text.
+    pending = advance("", opener)
+    for _ in range(_input.MAX_HELD_LINES * 2):
+        pending = advance(pending, "true\n")
+    assert pending.startswith(opener)
+
+
+def test_ctrl_c_asks_only_where_0_1_0_asked():
+    # A terminal cancels the typed text; a program reading a pipe keeps it. 0.1.0 asked when text was
+    # typed on the line or a quote, heredoc, \ or trailing | held the command; it still does there.
+    assert _input._cancel_asks("") is False
+    assert _input._cancel_asks("if true; then\n") is False
+    assert _input._cancel_asks("bash -c $(\n") is False
+    assert _input._cancel_asks("curl -fsSL https://x.example ") is True
+    assert _input._cancel_asks("echo 'open\n") is True
+    assert _input._cancel_asks("cat <<EOF\nline\n") is True
+    assert _input._cancel_asks("curl x " + PIPE + "\n") is True
+    store = ProcessInput()
+    store.record("proc_aaaa", "if [ -f package.json ]; then\n")
+    plan = store.plan("proc_aaaa", "\x03")
+    assert plan.error is None and plan.scan is None
+    store.record("proc_aaaa", "\x03")
+    assert store.pending("proc_aaaa") == ""
+    store.record("proc_aaaa", "echo 'open\n")
+    assert store.plan("proc_aaaa", "\x03").error[0] == "control_keys"
+    store.record("proc_aaaa", "\x03")  # approved: the text is cleared, not carried with the key
+    assert store.pending("proc_aaaa") == ""
+    assert store.plan("proc_aaaa", "ls\n").scan == "ls"
 
 
 def test_advance():
@@ -197,7 +360,9 @@ def test_advance():
     assert advance("", "curl x \\\n") == "curl x \\\n"
     assert advance("curl x \\\n", PIPE + " bash\n") == ""
     assert advance("", "\x03") == ""  # Ctrl-C with nothing typed leaves nothing
-    assert advance("ab", "\x03") == "ab\x03"
+    assert advance("ab", "\x03") == ""  # a terminal cancels what was typed: the key never sticks
+    assert advance("if true; then\n", "\x03") == ""
+    assert advance("echo 'a\n", "\x04") == ""
 
 
 def test_advance_keeps_an_unfinished_substitution_until_it_closes():
@@ -501,3 +666,29 @@ def test_approved_oversized_delivery_keeps_an_explicit_unknown_state():
     store.finished("a", True)
     assert store.pending("proc_aaaa") == "half"
     assert store.plan("proc_aaaa", "\n").error[0] == "too_large"
+
+
+# fmt: off
+_TOKENS = [
+    "$(", "(", ")", '"', "'", "`", "{ ", " }", "${", "}", "case x in ", "esac", " x) ", ";; ", "if ", "then ",
+    "fi", "time -p ", "coproc ", "<<1", "<<E", "\nE\n", "\n1\n", "\\", "#", "$[", "]", "; ", " | ", " && ", "\n",
+    "echo ", "do ", "done", "for x in a; ", "while :; ", "function f ", "f() ", "! ", "$((", "))", "<(", "x=",
+    "a ", "$'", "[[ ", " ]]", "eval ", "bash -c ", "a[", "print(x)", "if x:", "    ", "x << 2", "\n\n",
+]
+# fmt: on
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_reading_on_from_the_last_step_matches_reading_everything_again(seed):
+    # Each delivery reads only its new lines (``ProcessInput._parsers``); the result must be the same.
+    rng = __import__("random").Random(seed)
+    for _ in range(60):
+        text = "".join(rng.choice(_TOKENS) for _ in range(rng.randint(1, 30)))
+        cuts = sorted(rng.sample(range(len(text) + 1), min(len(text) + 1, rng.randint(1, 6))))
+        chunks = [text[a:b] for a, b in zip([0, *cuts], [*cuts, len(text)], strict=True)]
+        pending, parser = "", None
+        for keys in chunks:
+            fresh = _input._advance(pending, keys)
+            step = _input._advance(pending, keys, parser)
+            assert step.pending == fresh.pending, text
+            pending, parser = step.pending, step.parser

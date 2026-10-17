@@ -4,11 +4,21 @@
 
 Fixes from the review of 0.1.0:
 
-- Background terminal input: a command left open by an unclosed `$(`, `<(`, `>(`, `(`, `{` or `${`, or
-  an unfinished `if`, `case`, `for`, `select`, `while` or `until`, is kept together like a trailing `|`
-  or an open quote. After a person approved an opening line such as `bash -c $(`, `eval $(` or
-  `bash <(`, the lines that complete it used to be checked one at a time (each harmless on its own) while
-  the shell ran them as one command; they are now checked together with the opening line.
+- Background terminal input is read the way an interactive bash reads it. A command left open by an
+  unclosed `$(`, `<(`, `(`, `{`, `${`, `$[` or `[[`, a quote inside `"$(...)"`, a heredoc with any
+  delimiter, or an unfinished `if`, `case`, loop or function definition (also after `time -p` or
+  `coproc`) is kept together. After a person approved an opening line such as `bash -c $(` or
+  `eval $(time -p case x in x)`, the lines that complete it used to be checked one at a time (each
+  harmless on its own) while the shell ran them as one command; each is now checked together with the
+  lines before it. This narrows the gap rather than closing it: README Limits lists what remains.
+- Input for a program that is not a shell (a Python or Node REPL, `cat > file`) is still checked line
+  by line, as in 0.1.0. A line bash rejects as a syntax error (`print(x)`, a stray `done`) ends the
+  command, as bash drops it, and a command held open only by reserved words (`if x:`) or by a heredoc
+  whose delimiter does not start with a letter (`x << 4`) is followed for at most 32 lines (64 KiB).
+  Each new line costs only its own reading, not the whole held text again.
+- Ctrl-C or Ctrl-D on its own clears what was typed once it runs; it used to stay in the text, so every
+  later line failed as input with control keys. It asks where 0.1.0 asked (an open quote, heredoc,
+  final `\` or trailing `|`, or text typed on the line) and goes through otherwise.
 - Hermes Desktop batches: an earlier, not yet run command spelled `\cd`, `'cd'`, `"cd"`, `c\d`, `$'cd'`,
   `eval cd ...` or `eval "cd ..."`, `command [-p] cd`, or `cd` after `NAME=value` assignments, now counts as a
   possible directory change, like `cd` and `builtin cd` already did, so the later command asks instead of

