@@ -83,16 +83,17 @@ lines before it, also after you approved one of them: an approved `bash -c $(` i
 the lines that complete it. A line bash rejects as a syntax error (`print(x)`, a stray `done`) ends the
 command, because bash drops it. A command held open only by reserved words (`if`, `for`, `while`,
 `case`, `{`) or by a heredoc whose delimiter does not start with a letter (`<<1`) is followed for at
-most 32 lines (64 KiB); after that, lines are checked one at a time again (see Limits). Typed text
-counts once Hermes reports that the call ran, so a refused line stays typed and is checked again when
-the line is ended again. Input with control keys (Tab, Esc, Ctrl-A and other Ctrl keys, a lone
-carriage return, NUL, DEL) counts as a failed check: a terminal can treat them as editing keys
-(completion, moving the cursor, recalling history) and run a different line than the text tirith would
-see. Ctrl-C or Ctrl-D on its own cancels what was typed and goes through, except while a quote,
-heredoc, final `\` or trailing `|` is open or text is typed on the line: then it asks, as 0.1.0 did,
-and the typed text is cleared once it runs. `close` sends end of input, and a shell runs the text it
-holds at end of input even without Enter, so a `close` checks everything typed so far as a whole
-command (with nothing typed it goes through).
+most 32 lines (64 KiB); after that, lines are checked one at a time again (see Limits). When tirith
+reports that it could not analyse a line (`analysis_incomplete`) and the line runs, the next line is
+checked together with it. Typed text counts once Hermes reports that the call ran, so a refused line
+stays typed and is checked again when the line is ended again. Input with control keys (Tab, Esc,
+Ctrl-A and other Ctrl keys, a lone carriage return, NUL, DEL) counts as a failed check: a terminal can
+treat them as editing keys (completion, moving the cursor, recalling history) and run a different line
+than the text tirith would see. Ctrl-C or Ctrl-D on its own cancels what was typed and goes through,
+except while a quote, heredoc, final `\` or trailing `|` is open or text is typed on the line: then it
+asks, as 0.1.0 did, and the typed text is cleared once it runs. `close` sends end of input, and a shell
+runs the text it holds at end of input even without Enter, so a `close` checks everything typed so far
+as a whole command (with nothing typed it goes through).
 
 **When the plugin cannot know what was typed.** Hermes can run input calls for one background process
 in parallel, and a write can fail after some of its bytes reached the process, so neither the order of
@@ -214,7 +215,8 @@ Hermes 0.21.4 and earlier are not supported: there a crashing or slow plugin let
   closes otherwise (an apostrophe in prose opens a quote).
 - A command held open only by reserved words, or by a heredoc whose delimiter does not start with a
   letter, is checked line by line after 32 lines (64 KiB). Padding a loop body past that can hide how a
-  later line combines with the start of the loop.
+  later line combines with the start of the loop. The line after one tirith could not analyse is checked
+  together with it, but that covers one line only.
 - Ctrl-C and Ctrl-D cancel the typed text only on a terminal. A background process started without
   `pty: true` (Hermes's default) receives them as ordinary characters and keeps reading the command,
   but the plugin checks the lines after them on their own.

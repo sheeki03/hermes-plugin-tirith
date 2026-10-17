@@ -256,6 +256,7 @@ class _Analysis:
     start: int  # where that command starts (after the last command that ended or was dropped)
     lexical: bool  # held by a quote, a named heredoc, a final ``\`` or a trailing ``|``/``&&``/``||``
     bounded: bool  # held only by reserved words or an unnamed heredoc (see MAX_HELD_LINES)
+    done: tuple[int, int] | None  # the last command that ended without a syntax error
 
 
 class _Continuation:
@@ -286,6 +287,7 @@ class _Continuation:
         self.bodies_at: int | None = None  # where an unfinished heredoc body starts
         self.end = 0  # how far the text has been read (see ``resume``)
         self.start = 0
+        self.done: tuple[int, int] | None = None
 
     # -- words and reserved words --
 
@@ -773,6 +775,7 @@ class _Continuation:
         index += 1
         if self.error:  # bash drops the command and starts afresh on the next line
             self._reset()
+            self.done = None
             self.start = index
             return index
         return self._after_line(index)
@@ -786,6 +789,8 @@ class _Continuation:
             index = end
         self.bodies_at = None
         if not self._held():
+            if has_text(self.text[self.start : index]):
+                self.done = (self.start, index)
             self.start = index
             self.last_line = ""
         return index
@@ -870,7 +875,7 @@ class _Continuation:
         return index
 
     def _finish(self, index: int | None) -> _Analysis:
-        size = len(self.text)
+        text, size = self.text, len(self.text)
         if index is not None:
             self.end = size
         top = self.stack[-1] if self.stack else ""
@@ -886,9 +891,13 @@ class _Continuation:
         lexical = quoted or named or self.escaped_end or self.open_word or trailing
         held = not self.error and (index is None or self.escaped_end or self.open_word or self._held())
         if not held:
-            return _Analysis(False, size, False, False)
+            if not self.error and has_text(text[self.start :]):
+                self.done = (self.start, size)
+            elif self.error:
+                self.done = None
+            return _Analysis(False, size, False, False, self.done)
         bounded = not lexical and all(entry in _HELD for entry in self.stack)
-        return _Analysis(True, self.start, lexical, bounded)
+        return _Analysis(True, self.start, lexical, bounded, self.done)
 
 
 def continues(text: str) -> bool:
@@ -908,32 +917,45 @@ def continues(text: str) -> bool:
 @dataclass(frozen=True)
 class _Step:
     pending: str  # the unfinished input after the keys
+    completed: bool  # the keys ended at least one line
+    carry: str | None  # the command that ended, or was given up on, with these keys (see ProcessInput._carry)
     parser: _Continuation | None = None  # resumable for the next keys: it has read the held whole lines
+
+
+def _cap(text: str) -> str:
+    """At most MAX_HELD_BYTES of ``text``, cut at a line start, keeping the end."""
+    if len(text.encode("utf-8", "surrogatepass")) <= MAX_HELD_BYTES:
+        return text
+    tail = text[-MAX_HELD_BYTES:]
+    cut = tail.find("\n")
+    return tail[cut + 1 :] if cut >= 0 else tail
 
 
 def _advance(prior: str, keys: str, parser: _Continuation | None = None) -> _Step:
     """Where the input stands once ``keys`` follow ``prior``. ``parser``: the one that read ``prior``'s
     whole lines (from the last step), so only the new lines are read."""
     if interrupt_only(keys):  # Ctrl-C / Ctrl-D on its own: a terminal cancels what was typed
-        return _Step("")
+        return _Step("", False, None)
     text = prior + keys
     end = text.rfind("\n")
     if end < 0:
-        return _Step(text, parser)
+        return _Step(text, False, None, parser)
     head, tail = _normalise(text[: end + 1]), text[end + 1 :]
+    completed = "\n" in keys
     if parser is not None and parser.resumable and head.startswith(parser.text):
         found = parser.resume(head)
     else:
         parser = _Continuation(head)
         found = parser.run()
     if not found.open:
-        return _Step(tail)
+        carry = head[found.done[0] : found.done[1]].rstrip("\n") if found.done else None
+        return _Step(tail, completed, _cap(carry) if carry else None)
     held = head[found.start :]
     if found.bounded and (
         held.count("\n") > MAX_HELD_LINES or len(held.encode("utf-8", "surrogatepass")) > MAX_HELD_BYTES
     ):
-        return _Step(tail)  # given up on: line by line again
-    return _Step(held + tail, parser if found.start == 0 else None)
+        return _Step(tail, completed, _cap(held.rstrip("\n")))  # given up on: line by line again
+    return _Step(held + tail, completed, None, parser if found.start == 0 else None)
 
 
 def advance(prior: str, keys: str) -> str:
@@ -990,6 +1012,11 @@ def finished_processes(args: Any, result: Any) -> list[str]:
     return [found for found in ids if found]
 
 
+def _with_context(context: str, scan: str | None) -> str | None:
+    """``scan`` checked together with the carried line before it (see ``ProcessInput._carry``)."""
+    return context + "\n" + scan if context and scan is not None else scan
+
+
 def _related(a: str, b: str) -> bool:
     return a != b and (a.startswith(b) or b.startswith(a))
 
@@ -1018,6 +1045,7 @@ class _Call:
     complete: bool = False
     written: bool | None = None
     oversized: bool = False
+    incomplete: bool = False  # tirith could not analyse the text this call completes (analysis_incomplete)
 
 
 class ProcessInput:
@@ -1030,6 +1058,10 @@ class ProcessInput:
     Capacity limits apply to the call or process that would need a new entry: its input fails
     closed, and tracking recovers as calls finish and processes exit. Input that ran anyway (an
     approved failed check, or ``fail_closed: false``) is still recorded, so the limits are soft.
+
+    Defence in depth: when tirith reported ``analysis_incomplete`` for a line that ran and the line
+    is no longer held as part of a longer command, the next line is checked together with it
+    (``_carry``), in case the shell still reads it as one command for a reason this module misses.
     """
 
     def __init__(
@@ -1052,6 +1084,9 @@ class ProcessInput:
         # Completed call ids. The value is the process when the post arrived before its pre returned
         # (or before it even registered): that late pre must not register the call again.
         self._finished: OrderedDict[object, str | None] = OrderedDict()
+        # process -> the text of its last line that tirith reported analysis_incomplete for, checked
+        # again in front of the next line it ends. Defence in depth only: the oldest is dropped first.
+        self._carry: OrderedDict[str, str] = OrderedDict()
         # process -> the parser that read its held whole lines: each delivery reads only its new lines
         self._parsers: dict[str, _Continuation] = {}
         self._lock = threading.Lock()
@@ -1099,7 +1134,7 @@ class ProcessInput:
         )
         return True
 
-    def _apply(self, process: str, keys: str) -> None:
+    def _apply(self, process: str, keys: str, incomplete: bool = False) -> None:
         if process in self._unknown:
             self._mark_unknown(process, self._unknown[process], keys)
             return
@@ -1122,6 +1157,12 @@ class ProcessInput:
             self._pending[process] = step.pending  # plan() refuses a new process when full; this ran anyway
         else:
             self._pending.pop(process, None)
+        if step.completed:  # the next line no longer needs the earlier carry
+            self._carry.pop(process, None)
+            if incomplete and step.carry:
+                self._carry[process] = step.carry
+                while len(self._carry) > self._max_processes:
+                    self._carry.popitem(last=False)
 
     def _settle(self, group: object) -> None:
         calls = [(call_id, entry) for call_id, entry in self._inflight.items() if entry.group is group]
@@ -1149,7 +1190,7 @@ class ProcessInput:
             if entry.oversized:
                 self._mark_unknown(entry.process, ("too_large", "the input for this background process is too large"))
             else:
-                self._apply(entry.process, entry.keys)
+                self._apply(entry.process, entry.keys, entry.incomplete)
 
     # -- API --
 
@@ -1170,6 +1211,7 @@ class ProcessInput:
             else:
                 known = prior + "".join(entry.keys for entry in outstanding if entry.process == process)
             text = known + keys
+            context = self._carry.get(process, "")
             error = None
             names = self._pending.keys() | self._unknown.keys()
             if call_id is not None and call_id in self._finished:
@@ -1213,14 +1255,19 @@ class ProcessInput:
                     error = ("too_many", "too many background input calls are unfinished; this one cannot be tracked")
             if error:
                 scannable = error[0] in _GUESSED and len(text.encode("utf-8", "surrogatepass")) <= self._max_bytes
-                scan = _ready(text, eof) if scannable else None
+                scan = _with_context(context, _ready(text, eof)) if scannable else None
                 return Plan(process, keys, text, scan=scan, error=error)
             if interrupt_only(keys):
                 return Plan(process, keys, text)
-            return Plan(process, keys, text, scan=_ready(text, eof))
+            return Plan(process, keys, text, scan=_with_context(context, _ready(text, eof)))
 
-    def started(self, call_id: object, process: str, keys: str, *, permitted: bool = True) -> None:
-        """The pre hook returned. An earlier terminal post wins over this late registration."""
+    def started(
+        self, call_id: object, process: str, keys: str, *, permitted: bool = True, incomplete: bool = False
+    ) -> None:
+        """The pre hook returned. An earlier terminal post wins over this late registration.
+
+        ``incomplete``: tirith reported ``analysis_incomplete`` for what this call completes.
+        """
         with self._lock:
             if call_id in self._finished:
                 self._finished[call_id] = None  # the late pre has now returned; safe to retire this tombstone
@@ -1230,6 +1277,7 @@ class ProcessInput:
             if entry is None:
                 return  # finished already, or not tracked (its post marks the process unknown)
             entry.preparing = False
+            entry.incomplete = incomplete
             if not permitted and not entry.complete:
                 entry.complete, entry.written = True, False
                 self._remember_finished(call_id, None)
@@ -1277,6 +1325,7 @@ class ProcessInput:
             self._pending.pop(process, None)
             self._unknown.pop(process, None)
             self._guess.pop(process, None)
+            self._carry.pop(process, None)
             self._parsers.pop(process, None)
             groups = set()
             for call_id, entry in list(self._inflight.items()):
@@ -1299,4 +1348,5 @@ class ProcessInput:
             self._unknown.clear()
             self._guess.clear()
             self._finished.clear()
+            self._carry.clear()
             self._parsers.clear()

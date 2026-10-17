@@ -19,6 +19,8 @@ Fixes from the review of 0.1.0:
 - Ctrl-C or Ctrl-D on its own clears what was typed once it runs; it used to stay in the text, so every
   later line failed as input with control keys. It asks where 0.1.0 asked (an open quote, heredoc,
   final `\` or trailing `|`, or text typed on the line) and goes through otherwise.
+- When tirith reports `analysis_incomplete` for a background line that runs, the next line is checked
+  together with it, in case the shell still reads the two as one command for a reason the plugin misses.
 - Hermes Desktop batches: an earlier, not yet run command spelled `\cd`, `'cd'`, `"cd"`, `c\d`, `$'cd'`,
   `eval cd ...` or `eval "cd ..."`, `command [-p] cd`, or `cd` after `NAME=value` assignments, now counts as a
   possible directory change, like `cd` and `builtin cd` already did, so the later command asks instead of

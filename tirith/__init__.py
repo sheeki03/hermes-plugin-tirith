@@ -36,6 +36,7 @@ WATCHED_TOOLS = TERMINAL_TOOLS | PROCESS_TOOLS
 # a check stopped there asks for approval like any failed check.
 HOOK_LIMIT_DEFAULT = 30.0
 HOOK_MARGIN = 5.0
+INCOMPLETE_RULE = "analysis_incomplete"  # tirith could not analyse part of the command
 
 _LOCATOR = _locate.Locator()
 # task id -> cwd reported by the last terminal result. No age limit: Hermes reports the cwd only when a
@@ -356,10 +357,17 @@ def check_process_input(
     return decision, outcome, plan.scan if outcome.kind != "error" and plan.scan is not None else plan.text
 
 
-def _track_process_input(plan: _input.Plan, input_call_id: object, directive: dict | None) -> None:
-    """Finish the pre reservation; an early terminal post must not be overwritten by it."""
+def _track_process_input(
+    plan: _input.Plan, input_call_id: object, directive: dict | None, outcome: _scan.ScanOutcome | None = None
+) -> None:
+    """Finish the pre reservation; an early terminal post must not be overwritten by it.
+
+    When tirith could not analyse the text (``analysis_incomplete``) and the call runs, the next line
+    of that process is checked together with it.
+    """
     permitted = directive is None or directive.get("action") != "block"
-    _PROCESS_INPUT.started(input_call_id, plan.process, plan.keys, permitted=permitted)
+    incomplete = outcome is not None and any(f.rule_id == INCOMPLETE_RULE for f in outcome.findings)
+    _PROCESS_INPUT.started(input_call_id, plan.process, plan.keys, permitted=permitted, incomplete=incomplete)
 
 
 def _internal_error(command: str, settings: _settings.Settings, task_id: str, session_id: str) -> dict | None:
@@ -446,7 +454,7 @@ def _on_pre_tool_call(
         _log_decision(decision, outcome, command)
         directive = decision.directive()
         if plan is not None:
-            _track_process_input(plan, input_call_id, directive)
+            _track_process_input(plan, input_call_id, directive, outcome)
         return directive
     except Exception:
         logger.exception("tirith plugin: internal error while checking a %s call", tool_name)

