@@ -76,13 +76,14 @@ tested with Hermes 0.22.5.
 - tirith 0.5.0 reports `package_lookup_incomplete` (MEDIUM) when its live package lookups (OSV.dev,
   deps.dev, ecosyste.ms, the CISA KEV feed) do not all finish and nothing is cached: online usually
   because tirith's short lookup time budget during a check ran out (500 ms per check, shared by the
-  packages in it) or a service returned an error, and always with `offline: true` (the plugin sets
-  `TIRITH_OFFLINE=1` only then). That made many a `pip install`, `npm install`, `npx`, `cargo add` or
-  `go get` append the same warning to its result. With `warn_action: allow`, the first one in a session
-  is now appended with a note on what it means (incomplete verification, not evidence about the
-  package, and not a sign that the machine is offline unless the offline setting is on), and later ones
-  in that session are left out; every other finding is still appended, and with `warn_action: approve`
-  or `block` it still asks or refuses each time.
+  packages in it) or a service returned an error, and always in tirith's offline mode (`offline: true`,
+  with which the plugin sets `TIRITH_OFFLINE=1`, or a `TIRITH_OFFLINE` tirith inherits). That made many
+  a `pip install`, `npm install`, `npx`, `cargo add` or `go get` append the same warning to its result.
+  With `warn_action: allow`, the first one in a session is now appended with a note on what it means
+  (incomplete verification, not evidence about the package, and not a sign that the machine is offline
+  unless tirith's offline mode is on), and later ones in that session are left out; every other
+  finding is still appended, and with `warn_action: approve` or `block` it still asks or refuses each
+  time.
 - README, Limits: commands tirith allows can switch the guard off (uninstall or replace the binary,
   `hermes plugins disable tirith`, `hermes config set ...`); the plugin runs whichever program is at the
   resolved path, and the contract check does not prove it is tirith, so hardened setups should point

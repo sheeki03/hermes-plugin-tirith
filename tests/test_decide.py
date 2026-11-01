@@ -78,7 +78,8 @@ def noted_run(findings, noted=frozenset(), settings=None, kind="warn"):
     return decide(outcome, settings or Settings(), command="pip install requests", cwd=CWD, noted=noted)
 
 
-def test_the_first_lookup_warning_of_a_session_is_shown_with_its_note():
+def test_the_first_lookup_warning_of_a_session_is_shown_with_its_note(monkeypatch):
+    monkeypatch.delenv("TIRITH_OFFLINE", raising=False)
     decision = noted_run([LOOKUP])
     assert decision.directive() is None and decision.notes == ("package_lookup_incomplete",)
     assert "[MEDIUM] Package threat intelligence could not be completed (package_lookup_incomplete)" in decision.context
@@ -86,10 +87,25 @@ def test_the_first_lookup_warning_of_a_session_is_shown_with_its_note():
     assert "Later package_lookup_incomplete warnings in this session are not repeated" in decision.context
     # the usual cause online is tirith's short lookup budget or a service error, not a machine that is offline
     assert "short time budget" in decision.context and "does not mean that the machine is offline" in decision.context
-    assert "CISA KEV" in decision.context and "offline setting" not in decision.context
+    assert "CISA KEV" in decision.context and "offline mode" not in decision.context
     offline = noted_run([LOOKUP], settings=Settings(offline=True)).context
-    assert "skipped because the plugin's offline setting is on" in offline and "time budget" not in offline
+    assert "skipped because tirith's offline mode is on" in offline and "time budget" not in offline
     assert "not evidence that a package is malicious" in offline
+
+
+@pytest.mark.parametrize("value", ["1", "true", " YES ", "On"])
+def test_a_tirith_offline_from_the_environment_counts_as_offline_mode(monkeypatch, value):
+    # child_env passes TIRITH_OFFLINE on to tirith, which then skips the lookups on purpose.
+    monkeypatch.setenv("TIRITH_OFFLINE", value)
+    context = noted_run([LOOKUP]).context
+    assert "skipped because tirith's offline mode is on" in context and "machine is offline" not in context
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "off", "no", "2"])
+def test_a_tirith_offline_tirith_reads_as_off_keeps_the_online_note(monkeypatch, value):
+    monkeypatch.setenv("TIRITH_OFFLINE", value)
+    context = noted_run([LOOKUP]).context
+    assert "does not mean that the machine is offline" in context and "offline mode" not in context
 
 
 def test_a_repeated_lookup_warning_is_left_out_once_noted():

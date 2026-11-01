@@ -26,10 +26,13 @@ MAX_LISTED = 5
 SALTED_KINDS = frozenset({"approval", "block", "bypass", "error"})
 # Warnings about tirith's own coverage rather than the command, which would otherwise be appended to the
 # result of many package installs (tirith's short lookup time budget ran out, a lookup service returned
-# an error or is out of reach, the offline setting, and no cached answer).
+# an error or is out of reach, tirith's offline mode, and no cached answer).
 # With warn_action allow the first one in a session is shown with an explanation; later ones in that
 # session are left out of the appended warning. They still count everywhere else (prompts, blocks).
 SESSION_NOTE_RULES = frozenset({"package_lookup_incomplete"})
+# The TIRITH_OFFLINE values tirith reads as on (offline_env_active in its CLI). child_env passes a
+# TIRITH_OFFLINE from Hermes's environment on to tirith when the offline setting is off.
+_OFFLINE_ON = frozenset({"1", "true", "yes", "on"})
 
 _ESCAPED_CATEGORIES = frozenset({"Cc", "Cf", "Co", "Cs", "Cn", "Zl", "Zp"})
 
@@ -202,8 +205,8 @@ def _session_note(finding: Finding) -> bool:
 
 
 def _note_text(rule_id: str, settings: _settings.Settings) -> str:
-    if settings.offline:
-        what = "were skipped because the plugin's offline setting is on, and no cached answer was available"
+    if settings.offline or os.environ.get("TIRITH_OFFLINE", "").strip().lower() in _OFFLINE_ON:
+        what = "were skipped because tirith's offline mode is on, and no cached answer was available"
     else:
         what = (
             "did not all finish during the check and no cached answer was available; usually tirith's short "
