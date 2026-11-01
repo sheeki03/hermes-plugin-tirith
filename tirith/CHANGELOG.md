@@ -102,6 +102,10 @@ Fixes from the review of 0.1.0. Needs tirith 0.5.0 or later and Hermes 0.21.5 or
   refusal. A prompt for an honoured `TIRITH=0` bypass lists no findings, because tirith does not
   analyse a bypassed command, not even one it would refuse as CRITICAL. tirith's `approval_rules`
   `timeout_secs` and `fallback` are not used; Hermes's approval settings decide.
+- README, Hermes 0.22.3 and later: the hooks run in the gateway process, so tirith gets the gateway's
+  environment (`TIRITH_*` variables and `PATH` from the shell you start Hermes from no longer reach
+  tirith or the binary search; use tirith's config and policy files and the plugin's `path`), and the
+  plugin's warnings are in the gateway's logs, once per gateway run.
 
 ## 0.1.0
 

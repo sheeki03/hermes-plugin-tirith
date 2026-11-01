@@ -184,6 +184,20 @@ prompted) twice. The plugin notices the built-in check and warns once; run
 `hermes config set security.tirith_enabled false`. Hermes 0.21.6 and later no longer contain it.
 Hermes 0.21.4 and earlier are not supported: there a crashing or slow plugin let the command run.
 
+## Hermes 0.22.3 and later
+
+From 0.22.3 the CLI, TUI and Desktop are clients of Hermes's gateway, and the plugin's hooks run in the
+gateway process, not in the program you started. The plugin asks Hermes for each session's directory
+(see Limits). Two more things follow:
+
+- The plugin builds tirith's environment from the gateway's environment, so `TIRITH_*` variables and a
+  `PATH` set in the shell you start Hermes from no longer reach tirith or the plugin's search for the
+  binary. Configure tirith through its own config and policy files, and set the plugin's `path` if
+  tirith is not in one of the usual install folders (those are searched by absolute path whatever
+  `PATH` says). A `TIRITH=0` never reaches tirith either way: the plugin removes it.
+- The plugin's log lines are in the gateway's logs, and a warning logged once is logged once per
+  gateway run, not once per session.
+
 ## Limits
 
 - Hermes does not tell plugins which backend (local, Docker, SSH, ...) runs the command. For the
@@ -289,7 +303,8 @@ separate program and grants no rights to tirith.
 
 The plugin logs to Hermes's `agent.log` under `hermes_plugins.tirith`: one INFO line per command that was
 not simply allowed (kind, rule ids, a hash of the command, never the command itself), and a WARNING once
-per problem (tirith missing or too old, invalid settings, double checking).
+per problem (tirith missing or too old, invalid settings, double checking). On Hermes 0.22.3 and later
+the gateway process writes them, to the gateway's logs, and "once" means once per gateway run.
 
 ## Licence
 
