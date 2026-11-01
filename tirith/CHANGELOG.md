@@ -108,7 +108,10 @@ tested with Hermes 0.22.5.
 - README, Hermes 0.22.3 and later: the hooks run in the gateway process, so tirith gets the gateway's
   environment (`TIRITH_*` variables and `PATH` come from the environment the gateway was started with,
   not from the shell of each session; use tirith's config and policy files and the plugin's `path`),
-  and the plugin's warnings are in the gateway's logs, once per gateway run.
+  and the gateway process writes the plugin's log lines (to `agent.log` and `gateway.log`, warnings
+  also to `errors.log`), so a warning is logged once per gateway run. README, Logs: with
+  `plugins.isolation: host` only warnings are kept, copied into `agent.log` as `plugin host [...]`
+  lines.
 
 ## 0.1.0
 

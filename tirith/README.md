@@ -198,8 +198,8 @@ gateway process, not in the program you started. The plugin asks Hermes for each
   tirith through its own config and policy files, and set the plugin's `path` if tirith is not in one
   of the usual install folders (those are searched by absolute path whatever `PATH` says). A
   `TIRITH=0` never reaches tirith either way: the plugin removes it.
-- The plugin's log lines are in the gateway's logs, and a warning logged once is logged once per
-  gateway run, not once per session.
+- The gateway process writes the plugin's log lines, to `agent.log` and also to `gateway.log` (see
+  Logs), and a warning logged once is logged once per gateway run, not once per session.
 
 ## Limits
 
@@ -307,8 +307,12 @@ separate program and grants no rights to tirith.
 
 The plugin logs to Hermes's `agent.log` under `hermes_plugins.tirith`: one INFO line per command that was
 not simply allowed (kind, rule ids, a hash of the command, never the command itself), and a WARNING once
-per problem (tirith missing or too old, invalid settings, double checking). On Hermes 0.22.3 and later
-the gateway process writes them, to the gateway's logs, and "once" means once per gateway run.
+per problem (tirith missing or too old, invalid settings, double checking), which also goes to
+`errors.log`. On Hermes 0.22.3 and later the gateway process writes them, to `gateway.log` as well, and
+"once" means once per gateway run. With `plugins.isolation: host` the plugin runs in a separate host
+process that keeps only its warnings: Hermes copies them into `agent.log` as INFO lines starting
+`plugin host [...]` (not into `errors.log` or `gateway.log`), and "once" means once per host process.
+`HERMES_PLUGIN_HOST_LOG_LEVEL=INFO` in Hermes's environment keeps the INFO lines too.
 
 ## Licence
 
