@@ -84,8 +84,12 @@ def test_the_first_lookup_warning_of_a_session_is_shown_with_its_note():
     assert "[MEDIUM] Package threat intelligence could not be completed (package_lookup_incomplete)" in decision.context
     assert "not evidence that a package is malicious" in decision.context
     assert "Later package_lookup_incomplete warnings in this session are not repeated" in decision.context
-    assert "offline or cannot reach them" in decision.context
-    assert "offline setting is on" in noted_run([LOOKUP], settings=Settings(offline=True)).context
+    # the usual cause online is tirith's short lookup budget or a service error, not a machine that is offline
+    assert "short time budget" in decision.context and "does not mean that the machine is offline" in decision.context
+    assert "CISA KEV" in decision.context and "offline setting" not in decision.context
+    offline = noted_run([LOOKUP], settings=Settings(offline=True)).context
+    assert "skipped because the plugin's offline setting is on" in offline and "time budget" not in offline
+    assert "not evidence that a package is malicious" in offline
 
 
 def test_a_repeated_lookup_warning_is_left_out_once_noted():

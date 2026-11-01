@@ -71,12 +71,16 @@ Fixes from the review of 0.1.0. Needs tirith 0.5.0 or later and Hermes 0.21.5 or
   case; the prompt says that tirith signalled that the input needs approval.
 - The `timeout` setting warns above 12 s (it warned above 25 s), and also when it does not fit the hook
   limit Hermes is configured with.
-- tirith 0.5.0 reports `package_lookup_incomplete` (MEDIUM) when its live package lookups cannot finish:
-  with `offline: true` (the plugin sets `TIRITH_OFFLINE=1` only then), out of reach, or nothing cached.
-  That made every `pip install`, `npm install`, `npx`, `cargo add` or `go get` append the same warning to
-  its result. With `warn_action: allow`, the first one in a session is now appended with a note on what
-  it means, and later ones in that session are left out; every other finding is still appended, and
-  with `warn_action: approve` or `block` it still asks or refuses each time.
+- tirith 0.5.0 reports `package_lookup_incomplete` (MEDIUM) when its live package lookups (OSV.dev,
+  deps.dev, ecosyste.ms, the CISA KEV feed) do not all finish and nothing is cached: online usually
+  because tirith's short lookup time budget during a check ran out (500 ms per check, shared by the
+  packages in it) or a service returned an error, and always with `offline: true` (the plugin sets
+  `TIRITH_OFFLINE=1` only then). That made many a `pip install`, `npm install`, `npx`, `cargo add` or
+  `go get` append the same warning to its result. With `warn_action: allow`, the first one in a session
+  is now appended with a note on what it means (incomplete verification, not evidence about the
+  package, and not a sign that the machine is offline unless the offline setting is on), and later ones
+  in that session are left out; every other finding is still appended, and with `warn_action: approve`
+  or `block` it still asks or refuses each time.
 - README, Limits: commands tirith allows can switch the guard off (uninstall or replace the binary,
   `hermes plugins disable tirith`, `hermes config set ...`); the plugin runs whichever program is at the
   resolved path, and the contract check does not prove it is tirith, so hardened setups should point

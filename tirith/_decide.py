@@ -25,7 +25,8 @@ MAX_TITLE = 120
 MAX_LISTED = 5
 SALTED_KINDS = frozenset({"approval", "block", "bypass", "error"})
 # Warnings about tirith's own coverage rather than the command, which would otherwise be appended to the
-# result of every package install (offline setting, no cached answer, a lookup service out of reach).
+# result of many package installs (tirith's short lookup time budget ran out, a lookup service returned
+# an error or is out of reach, the offline setting, and no cached answer).
 # With warn_action allow the first one in a session is shown with an explanation; later ones in that
 # session are left out of the appended warning. They still count everywhere else (prompts, blocks).
 SESSION_NOTE_RULES = frozenset({"package_lookup_incomplete"})
@@ -201,10 +202,17 @@ def _session_note(finding: Finding) -> bool:
 
 
 def _note_text(rule_id: str, settings: _settings.Settings) -> str:
-    cause = "the plugin's offline setting is on" if settings.offline else "it is offline or cannot reach them"
+    if settings.offline:
+        what = "were skipped because the plugin's offline setting is on, and no cached answer was available"
+    else:
+        what = (
+            "did not all finish during the check and no cached answer was available; usually tirith's short "
+            "time budget for these lookups ran out or a service returned an error, which does not mean that "
+            "the machine is offline"
+        )
     return (
-        f"Note: {rule_id} means tirith's live package lookups (OSV.dev, deps.dev) did not finish ({cause}, "
-        "and nothing was cached); that is incomplete verification, not evidence that a package is malicious. "
+        f"Note: {rule_id} means tirith's live package lookups (OSV.dev, deps.dev, ecosyste.ms, the CISA KEV "
+        f"feed) {what}. That is incomplete verification, not evidence that a package is malicious. "
         f"Later {rule_id} warnings in this session are not repeated; other warnings still are."
     )
 
