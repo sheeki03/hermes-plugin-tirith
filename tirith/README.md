@@ -282,13 +282,14 @@ local audit log (tagged `hermes`). Unless `offline: true`, it may refresh its si
 the background and look up package reputation with OSV.dev, deps.dev and ecosyste.ms. When OSV.dev
 reports advisories for a package, tirith also downloads CISA's Known Exploited Vulnerabilities (KEV)
 feed, the whole catalogue, so no package names are sent; it is cached for 24 hours. URL reputation is
-looked up with Google Safe Browsing only if you configured a key. Add any feeds, a running tirith daemon,
-policy webhooks or a team policy server you set up. During a check these lookups get a short time budget
-(500 ms, shared by the packages in the command); a running tirith daemon (`tirith daemon start`) gives
-them 5 s, and if it does not answer in that time tirith checks the command again locally, so with a
-daemon keep `timeout` well above 5 s (the default 10 s is). On a fresh install the first checks can run
-before tirith has finished downloading its threat database in the background; until then, the
-detection that needs it (known-malicious and typosquatted packages, known-bad hosts) is not available.
+looked up with Google Safe Browsing only if you configured a key. tirith also uses any feeds, a running
+tirith daemon, policy webhooks or a team policy server you set up. During a check these lookups get a
+short time budget (500 ms, shared by the packages in the command); a running tirith daemon
+(`tirith daemon start`) gives them 5 s, and if it does not answer in that time tirith checks the
+command again locally, so with a daemon keep `timeout` well above 5 s (the default 10 s is). On a fresh
+install the first checks can run before tirith has finished downloading its threat database in the
+background; until then, the detection that needs it (known-malicious and typosquatted packages,
+known-bad hosts) is not available.
 
 `offline: true` sets `TIRITH_OFFLINE=1` (the plugin sets it only then): tirith makes no network requests
 during checks and does not refresh its database in the background. Checks use only the threat database
