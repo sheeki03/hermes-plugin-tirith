@@ -1639,11 +1639,26 @@ def test_the_session_directory_from_hermes_is_used(ctx_factory, fake, gateway):
     assert f"(in {_shown(gateway['project'])}" in directive["message"]  # the prompt names the session's directory
 
 
+_A_FILE = object()  # replaced by the path of a regular file
+
+
 @pytest.mark.parametrize(
     "answer",
-    ["", "   ", None, 5, "relative/dir", "/nonexistent/hermes-plugin-tirith", RuntimeError("no session")],
+    [
+        "",
+        "   ",
+        None,
+        5,
+        "relative/dir",
+        "/nonexistent/hermes-plugin-tirith",
+        pytest.param(_A_FILE, id="a-file"),
+        RuntimeError("no session"),
+    ],
 )
-def test_an_unusable_session_directory_falls_back_to_terminal_cwd(ctx_factory, fake, gateway, answer):
+def test_an_unusable_session_directory_falls_back_to_terminal_cwd(ctx_factory, fake, gateway, tmp_path, answer):
+    if answer is _A_FILE:
+        (tmp_path / "a-file").write_text("")
+        answer = str(tmp_path / "a-file")
     ctx, registered = ctx_factory(path=fake)
     ctx.session_cwd, calls = _session_cwd(answer)
     assert pre(registered, "ls") is None
