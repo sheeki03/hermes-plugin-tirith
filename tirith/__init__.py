@@ -34,6 +34,7 @@ WATCHED_TOOLS = TERMINAL_TOOLS | PROCESS_TOOLS
 # therefore finishes its gate and check HOOK_MARGIN seconds (at most half the limit) before that limit;
 # a check stopped there asks for approval like any failed check.
 HOOK_LIMIT_DEFAULT = 30.0
+HOOK_LIMIT_MAX = 600.0  # Hermes clamps plugins.hook_callback_timeout to this
 HOOK_MARGIN = 5.0
 INCOMPLETE_RULE = "analysis_incomplete"  # tirith could not analyse part of the command
 
@@ -88,17 +89,34 @@ def _reset_for_tests() -> None:
     _settings._reset_warnings_for_tests()
 
 
+def _configured_hook_limit() -> float:
+    """``plugins.hook_callback_timeout`` from Hermes's config, read and clamped as Hermes does.
+
+    For a plugin host process (``plugins.isolation: host``): Hermes's package runs there but its plugin
+    manager does not, while the Hermes process that started it enforces this setting. Hermes's config
+    module is imported only when Hermes's package is already loaded; otherwise Hermes's default.
+    """
+    if "hermes_cli" not in sys.modules:
+        return HOOK_LIMIT_DEFAULT
+    plugins = (importlib.import_module("hermes_cli.config").load_config_readonly() or {}).get("plugins")
+    if not isinstance(plugins, Mapping) or plugins.get("hook_callback_timeout") is None:
+        return HOOK_LIMIT_DEFAULT
+    limit = float(plugins["hook_callback_timeout"])
+    if limit < 0:
+        return HOOK_LIMIT_DEFAULT
+    return min(limit, HOOK_LIMIT_MAX)
+
+
 def _hook_limit() -> float:
     """Hermes's ``plugins.hook_callback_timeout`` in seconds (``inf`` when Hermes sets none).
 
-    Read through Hermes only when Hermes has already loaded it, so nothing is imported on our
-    behalf; otherwise, or if that fails, Hermes's default.
+    Read through Hermes's own resolver when Hermes has loaded it, else from Hermes's config in a
+    plugin host process (``_configured_hook_limit``); nothing is imported outside Hermes. Otherwise,
+    or if that fails, Hermes's default.
     """
     resolve = getattr(sys.modules.get("hermes_cli.plugins"), "_resolve_hook_callback_timeout", None)
-    if not callable(resolve):
-        return HOOK_LIMIT_DEFAULT
     try:
-        limit = float(resolve())
+        limit = float(resolve()) if callable(resolve) else _configured_hook_limit()
     except Exception:
         return HOOK_LIMIT_DEFAULT
     if math.isnan(limit):

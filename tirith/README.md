@@ -66,7 +66,8 @@ attempt stopped only by the hook time limit below is not kept).
 Hermes stops waiting for a plugin after `plugins.hook_callback_timeout` (30 s by default), blocks the
 command, and then skips the plugin for 60 seconds, which blocks every tool. So each hook call, including
 the first one with the three startup commands, finishes 5 seconds before that limit (the plugin reads
-your Hermes setting): a check still running then is stopped and asks you, like any failed check.
+your Hermes setting, also in a plugin host process with `plugins.isolation: host`): a check still
+running then is stopped and asks you, like any failed check.
 
 **Background terminals.** `process_manage` sends keystrokes: `write` types text, `submit` types text
 and Enter. The plugin keeps what was typed into each background process and checks the whole line when

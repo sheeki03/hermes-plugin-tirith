@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 import yaml
@@ -199,6 +200,22 @@ def test_checks_run_in_the_session_directory_hermes_reports(hermes, tmp_path, mo
     finally:
         runtime_cwd.reset_session_cwd(token)
     assert os.path.samefile(scans(fake)[-1]["cwd"], project)
+
+
+def test_a_plugin_host_keeps_to_the_hook_time_limit_hermes_enforces(hermes, tmp_path):
+    # Under plugins.isolation: host the plugin runs in a child process without Hermes's plugin manager, while
+    # the Hermes process enforces plugins.hook_callback_timeout. The plugin must stop its check before that
+    # limit and ask (its own reason), not overrun it (Hermes's timeout block, then 60 s without the plugin).
+    plugins, configure, _fake, _home = hermes
+    slow = make_fake(
+        str(tmp_path / "slow"), {"rules": [{"contains": "slow", "rc": 0, "verdict": verdict("allow"), "sleep": 60}]}
+    )
+    configure({"path": slow}, isolation="host", hook_callback_timeout=8)
+    started = time.monotonic()
+    message = _gate(plugins, "echo slow", "limit-1")
+    elapsed = time.monotonic() - started
+    assert message and "hook time limit" in message, message
+    assert elapsed < 8, elapsed
 
 
 def test_requires_hermes_floor_is_enforced(hermes):

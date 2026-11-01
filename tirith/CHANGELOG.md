@@ -60,7 +60,11 @@ Fixes from the review of 0.1.0. Needs tirith 0.5.0 or later and Hermes 0.21.5 or
   now share one deadline 5 s before the limit, including the time spent waiting for another call's
   startup check; a check stopped there asks, like any failed check. A failed startup check is kept for
   5 s, so calls queued behind a broken binary get the answer at once; one that only ran out of the hook
-  call's time is not kept, and the next call gives the binary its full time again.
+  call's time is not kept, and the next call gives the binary its full time again. With
+  `plugins.isolation: host` the plugin runs in a separate host process, where Hermes's plugin manager
+  is not loaded, while Hermes still enforces the limit on the call; there the plugin reads
+  `plugins.hook_callback_timeout` from Hermes's configuration and clamps it as Hermes does (a negative
+  or invalid value is 30 s, 0 is no limit, more than 600 s is 600 s) instead of assuming 30 s.
 - The `timeout` setting warns above 12 s (it warned above 25 s), and also when it does not fit the hook
   limit Hermes is configured with.
 - tirith 0.5.0 reports `package_lookup_incomplete` (MEDIUM) when its live package lookups cannot finish:

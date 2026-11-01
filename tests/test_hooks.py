@@ -1294,7 +1294,62 @@ def test_the_hook_limit_comes_from_a_loaded_hermes(monkeypatch):
     hermes._resolve_hook_callback_timeout = broken
     assert plugin._hook_limit() == plugin.HOOK_LIMIT_DEFAULT
     monkeypatch.delitem(sys.modules, "hermes_cli.plugins")
+    monkeypatch.delitem(sys.modules, "hermes_cli", raising=False)
+
+    def refuse(name, *args, **kwargs):
+        raise AssertionError(f"must not import {name} outside Hermes")
+
+    monkeypatch.setattr(plugin.importlib, "import_module", refuse)
     assert plugin._hook_limit() == plugin.HOOK_LIMIT_DEFAULT  # never imported on our behalf
+
+
+def _plugin_host(monkeypatch, load_config):
+    """A plugin host process (plugins.isolation: host): Hermes's package is loaded, its plugin manager is not."""
+    monkeypatch.delitem(sys.modules, "hermes_cli.plugins", raising=False)
+    monkeypatch.setitem(sys.modules, "hermes_cli", types.ModuleType("hermes_cli"))
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", types.SimpleNamespace(load_config_readonly=load_config))
+
+
+@pytest.mark.parametrize(
+    "plugins,expected",
+    [
+        ({"hook_callback_timeout": 8}, 8.0),
+        ({"hook_callback_timeout": "12"}, 12.0),
+        ({"hook_callback_timeout": 0}, math.inf),  # Hermes runs the callback without a time limit
+        ({"hook_callback_timeout": 1000}, 600.0),  # Hermes clamps it to 600 s
+        ({"hook_callback_timeout": float("inf")}, 600.0),
+        ({"hook_callback_timeout": -1}, 30.0),  # Hermes's default from here on
+        ({"hook_callback_timeout": "soon"}, 30.0),
+        ({"hook_callback_timeout": [8]}, 30.0),
+        ({"hook_callback_timeout": float("nan")}, 30.0),
+        ({"hook_callback_timeout": None}, 30.0),
+        ({}, 30.0),
+        ("8", 30.0),
+        (None, 30.0),
+    ],
+)
+def test_a_plugin_host_reads_the_hook_limit_from_hermes_config(monkeypatch, plugins, expected):
+    # The Hermes process that started the plugin host enforces plugins.hook_callback_timeout on the hook call.
+    monkeypatch.setattr(plugin, "HOOK_LIMIT_DEFAULT", 30.0)
+    _plugin_host(monkeypatch, lambda: {"plugins": plugins})
+    assert plugin._hook_limit() == expected
+
+
+def test_the_hook_limit_from_hermes_config_never_raises(monkeypatch):
+    def broken():
+        raise RuntimeError("config")
+
+    _plugin_host(monkeypatch, broken)
+    assert plugin._hook_limit() == plugin.HOOK_LIMIT_DEFAULT
+    _plugin_host(monkeypatch, lambda: None)
+    assert plugin._hook_limit() == plugin.HOOK_LIMIT_DEFAULT
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", None)  # cannot be imported
+    assert plugin._hook_limit() == plugin.HOOK_LIMIT_DEFAULT
+    # in the Hermes process, Hermes's own resolver comes first
+    _plugin_host(monkeypatch, lambda: {"plugins": {"hook_callback_timeout": 8}})
+    hermes = types.SimpleNamespace(_resolve_hook_callback_timeout=lambda: 12.0)
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", hermes)
+    assert plugin._hook_limit() == 12.0
 
 
 @pytest.mark.parametrize("limit,expected", [(30.0, 25.0), (0.0, None), (6.0, 3.0)])
