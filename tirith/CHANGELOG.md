@@ -98,6 +98,10 @@ Fixes from the review of 0.1.0. Needs tirith 0.5.0 or later and Hermes 0.21.5 or
   repository has not picked up a new tirith release yet, `brew install sheeki03/tap/tirith` installs it
   from the tap tirith's release updates. The "older than 0.5.0" message no longer suggests
   `brew upgrade tirith` to everyone: it says to upgrade with the package manager tirith came from.
+- README: `hermes -z` (a one-shot unattended turn) approves every "ask" like `--yolo`, but never a
+  refusal. A prompt for an honoured `TIRITH=0` bypass lists no findings, because tirith does not
+  analyse a bypassed command, not even one it would refuse as CRITICAL. tirith's `approval_rules`
+  `timeout_secs` and `fallback` are not used; Hermes's approval settings decide.
 
 ## 0.1.0
 
