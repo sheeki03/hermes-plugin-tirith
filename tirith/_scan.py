@@ -9,7 +9,7 @@ import signal
 import subprocess
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -202,21 +202,32 @@ def _process_cwd() -> str:
         return tempfile.gettempdir()
 
 
-def resolve_cwd(args: Mapping[str, Any] | None, tracked_cwd: Any, env: Mapping[str, str] | None = None) -> str:
+def resolve_cwd(
+    args: Mapping[str, Any] | None,
+    tracked_cwd: Any,
+    env: Mapping[str, str] | None = None,
+    session_cwd: Callable[[], Any] | None = None,
+) -> str:
     """The directory tirith runs in, so repo policy and relative paths match the command.
 
-    Order: the call's ``workdir``; the cwd last reported by this task's terminal results;
-    ``TERMINAL_CWD``; the Hermes process cwd. The first existing directory wins.
+    Order: the call's absolute ``workdir``; the cwd last reported by this task's terminal results;
+    the session's directory as Hermes reports it (``session_cwd``, which must not raise and is
+    only called when needed); ``TERMINAL_CWD``; the Hermes process cwd. The first existing
+    directory wins. A relative ``workdir`` is taken relative to the directory found that way.
     """
-    source_env = os.environ if env is None else env
-    base = _usable_dir(tracked_cwd) or _usable_dir(source_env.get("TERMINAL_CWD")) or _process_cwd()
     workdir = (args or {}).get("workdir") if isinstance(args, Mapping) else None
-    if isinstance(workdir, str) and workdir.strip():
-        expanded = os.path.expanduser(workdir.strip())
-        if not os.path.isabs(expanded):
-            expanded = os.path.join(base, expanded)
-        if os.path.isdir(expanded):
-            return expanded
+    wanted = os.path.expanduser(workdir.strip()) if isinstance(workdir, str) else ""
+    if wanted and os.path.isabs(wanted) and os.path.isdir(wanted):
+        return wanted
+    source_env = os.environ if env is None else env
+    base = (
+        _usable_dir(tracked_cwd)
+        or (_usable_dir(session_cwd()) if session_cwd is not None else None)
+        or _usable_dir(source_env.get("TERMINAL_CWD"))
+        or _process_cwd()
+    )
+    if wanted and not os.path.isabs(wanted) and os.path.isdir(os.path.join(base, wanted)):
+        return os.path.join(base, wanted)
     return base
 
 

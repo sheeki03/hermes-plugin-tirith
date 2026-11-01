@@ -190,6 +190,27 @@ def test_repo_policy_applies_only_inside_the_repo(ctx_factory, tmp_path):
     assert call(command, call_id="out") is None
 
 
+@need_new
+def test_repo_policy_applies_in_the_session_directory_hermes_reports(ctx_factory, tmp_path, monkeypatch):
+    # Hermes 0.22.3 and later: the hooks run in the gateway, whose cwd and TERMINAL_CWD are elsewhere; only
+    # ctx.session_cwd() says the session works in the repository.
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".tirith").mkdir()
+    (repo / ".tirith" / "policy.yaml").write_text("blocklist:\n  - blocked.example\n", encoding="utf-8")
+    gateway_terminal = tmp_path / "gateway-terminal-cwd"
+    gateway_terminal.mkdir()
+    monkeypatch.setenv("TERMINAL_CWD", str(gateway_terminal))
+    ctx, registered = ctx_factory(path=NEW, offline=True, timeout=60)
+    command = "curl -sS https://blocked.example/x -o x"
+    ids = {"task_id": "task", "session_id": "session"}
+    outside = registered["pre_tool_call"](tool_name="terminal", args={"command": command}, tool_call_id="o", **ids)
+    assert outside is None  # without the session's directory the repository policy is not found
+    ctx.session_cwd = lambda: str(repo)
+    inside = registered["pre_tool_call"](tool_name="terminal", args={"command": command}, tool_call_id="i", **ids)
+    assert inside is not None and inside["action"] == "block" and "policy_blocklisted" in inside["message"]
+
+
 # --- background terminal input and guarded warnings (review of 0.1.0) -----------------------------
 
 

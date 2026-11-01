@@ -171,12 +171,17 @@ Hermes 0.21.4 and earlier are not supported: there a crashing or slow plugin let
 
 ## Limits
 
-- Hermes does not tell plugins which backend (local, Docker, SSH, ...) runs the command or its exact
-  directory. The plugin uses the call's `workdir`, else the directory the task's last `cd` moved to (as
-  reported in the command result), else `TERMINAL_CWD`, else Hermes's own directory. For remote and
-  container backends this is approximate, and their commands are checked too. The directory is
-  remembered for up to 4096 tasks; past that, the task that has gone longest without a command is
-  forgotten (a task that keeps running commands keeps its directory).
+- Hermes does not tell plugins which backend (local, Docker, SSH, ...) runs the command. For the
+  directory, the plugin uses the call's `workdir`, else the directory the task's last `cd` moved to (as
+  reported in the command result), else the session's directory as Hermes reports it to plugins
+  (`ctx.session_cwd()`, Hermes 0.22.3 and later), else `TERMINAL_CWD`, else Hermes's own directory.
+  From 0.22.3 the CLI, TUI and Desktop are clients of Hermes's gateway, and plugin hooks run in the
+  gateway process, whose own directory and environment are not the session's; Hermes 0.22.2 and
+  earlier have no `ctx.session_cwd()`, and the plugin falls back as before. For remote and container
+  backends this is approximate (a directory that does not exist on this machine is skipped), and their
+  commands are checked too. The directory a `cd` moved to is remembered for up to 4096 tasks; past
+  that, the task that has gone longest without a command is forgotten (a task that keeps running
+  commands keeps its directory).
 - Hermes Desktop asks about adjacent terminal commands together: it checks all of them before the
   first one runs, so a later command is checked before an earlier `cd` has moved the directory. When
   an earlier command of the same task that has not run yet contains `cd`, `pushd`, `popd`, `source`

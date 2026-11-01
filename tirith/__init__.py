@@ -15,7 +15,7 @@ import math
 import os
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from . import _cd, _decide, _input, _locate, _scan, _settings, _state
@@ -53,6 +53,20 @@ _PROCESS_INPUT = _input.ProcessInput()  # background process -> input typed but 
 _PENDING_TERMINAL = _state.BoundedStore()  # scoped hook identity -> (task id, command) from pre to post
 _FAIL_OPEN_LIMIT = _state.RateLimiter(60.0)
 _TIMEOUT_LIMIT = _state.RateLimiter(60.0)
+
+
+def _session_cwd(ctx: Any) -> Any:
+    """The calling session's directory as Hermes reports it (``ctx.session_cwd()``), or None.
+
+    From Hermes 0.22.3 the CLI, TUI and Desktop are clients of the gateway, and plugin hooks run in
+    the gateway process: its own cwd is not the session's, and the session's ``TERMINAL_CWD`` is kept
+    per turn, outside ``os.environ``. Hermes 0.22.2 and earlier have no such method. Never raises.
+    """
+    try:
+        method = getattr(ctx, "session_cwd", None)
+        return method() if callable(method) else None
+    except Exception:
+        return None
 
 
 def register(ctx: Any) -> None:
@@ -248,9 +262,13 @@ def check_command(
     task_id: str,
     session_id: str,
     deadline: float | None = None,
+    session_cwd: Callable[[], Any] | None = None,
 ) -> tuple[_decide.Decision, _scan.ScanOutcome, str]:
-    """Locate and gate tirith, then check ``command``; both end by ``deadline`` (``time.monotonic()``)."""
-    cwd = _scan.resolve_cwd(args, _CWD_BY_TASK.get(task_id))
+    """Locate and gate tirith, then check ``command``; both end by ``deadline`` (``time.monotonic()``).
+
+    ``session_cwd`` asks Hermes for the session's directory (see ``_scan.resolve_cwd``).
+    """
+    cwd = _scan.resolve_cwd(args, _CWD_BY_TASK.get(task_id), session_cwd=session_cwd)
     env = _scan.child_env(settings, session_id=session_id, task_id=task_id)
     located = _LOCATOR.resolve(settings.path, env, settings.timeout, deadline)
     if not located.ok:
@@ -285,6 +303,7 @@ def _fail_closed_after_check(
     task_id: str,
     session_id: str,
     scope: str = "",
+    session_cwd: Callable[[], Any] | None = None,
 ) -> tuple[_decide.Decision, _scan.ScanOutcome]:
     """Something the check depends on is unknown (``error``), but the text was checked as well.
 
@@ -298,7 +317,7 @@ def _fail_closed_after_check(
             return decision, outcome
         findings = outcome.findings
     failed = _scan.error_outcome(*error, findings=findings)
-    cwd = _scan.resolve_cwd(args, _CWD_BY_TASK.get(task_id))
+    cwd = _scan.resolve_cwd(args, _CWD_BY_TASK.get(task_id), session_cwd=session_cwd)
     decision = _decide.decide(
         failed, settings, command=command, cwd=cwd, session_id=session_id, task_id=task_id, scope=scope
     )
@@ -313,6 +332,7 @@ def check_process_input(
     task_id: str,
     session_id: str,
     deadline: float | None = None,
+    session_cwd: Callable[[], Any] | None = None,
 ) -> tuple[_decide.Decision, _scan.ScanOutcome, str]:
     """Check what a ``process_manage`` write/submit/close completes (``plan.scan``), or fail closed.
 
@@ -320,7 +340,7 @@ def check_process_input(
     a refusal stands, and its findings join the failed-check prompt, whose approval key is tied to
     this process and this text. With ``fail_closed`` off, that check is all there is.
     """
-    ids = {"args": args, "task_id": task_id, "session_id": session_id, "deadline": deadline}
+    ids = {"args": args, "task_id": task_id, "session_id": session_id, "deadline": deadline, "session_cwd": session_cwd}
     if plan.error is None:
         if plan.scan is None:
             return _decide.Decision("none", "allow"), _scan.ScanOutcome(kind="allow"), plan.text  # nothing runs yet
@@ -339,6 +359,7 @@ def check_process_input(
         task_id=task_id,
         session_id=session_id,
         scope=plan.process,
+        session_cwd=session_cwd,
     )
     return decision, outcome, plan.scan if outcome.kind != "error" and plan.scan is not None else plan.text
 
@@ -424,7 +445,13 @@ def _on_pre_tool_call(
         _warn_timeout_budget(settings.timeout, limit)
         budget = _hook_budget(limit)
         deadline = None if math.isinf(budget) else started + budget
-        ids = {"args": args, "task_id": task_id, "session_id": session_id, "deadline": deadline}
+        ids = {
+            "args": args,
+            "task_id": task_id,
+            "session_id": session_id,
+            "deadline": deadline,
+            "session_cwd": functools.partial(_session_cwd, ctx),
+        }
         if plan is None:
             decision, outcome, cwd = check_command(command, settings, **ids)
             if in_doubt:

@@ -34,6 +34,16 @@ Fixes from the review of 0.1.0. Needs tirith 0.5.0 or later and Hermes 0.21.5 or
   redirections (`>/dev/null cd`, `cd>/dev/null`), now counts as a possible directory change, like `cd`
   and `builtin cd` already did, so the later command asks instead of being checked silently under the
   old directory's policy. `echo 'a|cd'`, `echo "; cd x"` and `command -v cd` do not count.
+- On Hermes 0.22.3 and later, commands are checked in the session's directory. Since 0.22.3 the
+  CLI, TUI and Desktop are clients of Hermes's gateway and plugin hooks run in the gateway process,
+  whose own directory is not the session's, and the session's `TERMINAL_CWD` is kept per turn, not in
+  the process environment. A command without `workdir` that followed no `cd` was checked in the
+  gateway's directory or the gateway's `TERMINAL_CWD`: a project's `.tirith/policy.yaml` (its blocklist
+  among others) did not apply, relative paths and the repository root were looked up in the wrong
+  tree, the prompt named the wrong directory, and a warning approved "Always" with
+  `warn_action: approve` in one project was approved in every other. The plugin now asks Hermes for
+  the session's directory (`ctx.session_cwd()`) after the call's `workdir` and the task's last `cd`,
+  before `TERMINAL_CWD`; Hermes 0.22.2 and earlier, which have no such call, work as before.
 - The directory a task moved to is kept while the task is in use. It was dropped once 512 other tasks
   had reported a directory change, even if the task was still running commands, which were then checked
   in `TERMINAL_CWD` or Hermes's own directory under the wrong repository policy. Each check now counts as

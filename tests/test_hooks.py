@@ -1527,6 +1527,142 @@ def test_workdir_wins_and_is_not_recorded(hooks, fake, tmp_path):
     assert not os.path.samefile(scans(fake)[-1]["cwd"], work)
 
 
+# Hermes 0.22.3 and later run plugin hooks in the gateway process for the CLI, TUI and Desktop too: its own
+# directory and TERMINAL_CWD are not the session's, which Hermes reports through ctx.session_cwd().
+
+
+@pytest.fixture
+def gateway(tmp_path, monkeypatch):
+    """Directories as a gateway sees them: its own cwd, the TERMINAL_CWD in its environment, the session's."""
+    dirs = {name: tmp_path / name for name in ("install-root", "gateway-terminal-cwd", "project")}
+    for path in dirs.values():
+        path.mkdir()
+    monkeypatch.chdir(dirs["install-root"])
+    monkeypatch.setenv("TERMINAL_CWD", str(dirs["gateway-terminal-cwd"]))
+    return dirs
+
+
+def _session_cwd(answer):
+    """A ctx.session_cwd() that answers ``answer`` (or raises it), and the list of its calls."""
+    calls = []
+
+    def session_cwd():
+        calls.append(1)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    return session_cwd, calls
+
+
+def _shown(path) -> str:
+    return f"{plugin._decide._display_cwd(str(path))})"
+
+
+def test_the_session_directory_from_hermes_is_used(ctx_factory, fake, gateway):
+    ctx, registered = ctx_factory(path=fake)
+    ctx.session_cwd, _calls = _session_cwd(str(gateway["project"]))
+    assert pre(registered, "ls", call_id="c1") is None
+    assert os.path.samefile(scans(fake)[-1]["cwd"], gateway["project"])
+    directive = pre(registered, ATTACK, call_id="c2")
+    assert f"(in {_shown(gateway['project'])}" in directive["message"]  # the prompt names the session's directory
+
+
+@pytest.mark.parametrize(
+    "answer",
+    ["", "   ", None, 5, "relative/dir", "/nonexistent/hermes-plugin-tirith", RuntimeError("no session")],
+)
+def test_an_unusable_session_directory_falls_back_to_terminal_cwd(ctx_factory, fake, gateway, answer):
+    ctx, registered = ctx_factory(path=fake)
+    ctx.session_cwd, calls = _session_cwd(answer)
+    assert pre(registered, "ls") is None
+    assert calls and os.path.samefile(scans(fake)[-1]["cwd"], gateway["gateway-terminal-cwd"])
+
+
+@pytest.mark.parametrize("attribute", ["absent", "not callable"])
+def test_a_hermes_without_session_cwd_falls_back_as_before(ctx_factory, fake, gateway, monkeypatch, attribute):
+    # Hermes 0.21.5 to 0.22.2 have no ctx.session_cwd(): TERMINAL_CWD, then Hermes's own directory.
+    ctx, registered = ctx_factory(path=fake)
+    if attribute == "not callable":
+        ctx.session_cwd = str(gateway["project"])
+    assert pre(registered, "ls", call_id="c1") is None
+    assert os.path.samefile(scans(fake)[-1]["cwd"], gateway["gateway-terminal-cwd"])
+    monkeypatch.delenv("TERMINAL_CWD")
+    assert pre(registered, "ls", call_id="c2") is None
+    assert os.path.samefile(scans(fake)[-1]["cwd"], gateway["install-root"])
+
+
+def test_workdir_and_the_tasks_cd_come_before_the_session_directory(ctx_factory, fake, gateway, tmp_path):
+    ctx, registered = ctx_factory(path=fake)
+    ctx.session_cwd, calls = _session_cwd(str(gateway["project"]))
+    work, moved = tmp_path / "work", tmp_path / "moved"
+    work.mkdir()
+    moved.mkdir()
+    (gateway["project"] / "sub").mkdir()
+    assert pre(registered, "ls", call_id="w1", workdir=str(work)) is None
+    assert os.path.samefile(scans(fake)[-1]["cwd"], work)
+    assert calls == []  # an absolute workdir needs no answer from Hermes
+    assert pre(registered, "ls", call_id="w2", workdir="sub") is None  # relative to the session's directory
+    assert os.path.samefile(scans(fake)[-1]["cwd"], gateway["project"] / "sub")
+    # the directory this task's last cd moved to, as Hermes reported it, comes first
+    assert pre(registered, f"cd {moved}", call_id="c1") is None
+    post_hook(
+        registered,
+        tool_name="terminal",
+        args={"command": f"cd {moved}"},
+        result=json.dumps({"output": "", "cwd": str(moved)}),
+        tool_call_id="c1",
+    )
+    assert pre(registered, "ls", call_id="c2") is None
+    assert os.path.samefile(scans(fake)[-1]["cwd"], moved)
+    assert pre(registered, "ls", call_id="c3", task="task-2") is None  # another task of the session
+    assert os.path.samefile(scans(fake)[-1]["cwd"], gateway["project"])
+
+
+def test_a_warning_approved_always_in_one_project_asks_again_in_another(tmp_path, ctx_factory, gateway):
+    # warn_action approve keys are not salted ("Always" is permanent), so they must carry the real directory
+    fake = make_fake(str(tmp_path / "bin"), {"rules": [WARN_RULE]})
+    ctx, registered = ctx_factory(path=fake, warn_action="approve")
+    other = tmp_path / "other-project"
+    other.mkdir()
+    ctx.session_cwd = lambda: str(gateway["project"])
+    first = pre(registered, WARNED, call_id="k1", session="sess-a")
+    ctx.session_cwd = lambda: str(other)
+    second = pre(registered, WARNED, call_id="k2", session="sess-b")
+    assert first["rule_key"].startswith("tirith:warn:") and second["rule_key"].startswith("tirith:warn:")
+    assert first["rule_key"] != second["rule_key"]
+
+
+def test_desktop_batch_after_a_pending_cd_still_asks_with_a_session_directory(ctx_factory, fake, gateway):
+    ctx, registered = ctx_factory(path=fake)
+    ctx.session_cwd, _calls = _session_cwd(str(gateway["project"]))
+    assert pre(registered, "cd sub", call_id="b1") is None
+    directive = pre(registered, "make deploy", call_id="b2")
+    assert directive["action"] == "approve" and directive["rule_key"].startswith("tirith:error:cwd_pending:")
+    assert f"(checked in {_shown(gateway['project'])}" in directive["message"]
+    assert os.path.samefile(scans(fake)[-1]["cwd"], gateway["project"])
+
+
+def test_background_input_is_checked_in_the_session_directory(ctx_factory, fake, gateway):
+    ctx, registered = ctx_factory(path=fake)
+    ctx.session_cwd, _calls = _session_cwd(str(gateway["project"]))
+    assert pre(registered, tool="process_manage", call_id="s1", action="submit", data="ls", session_id=PROC) is None
+    assert os.path.samefile(scans(fake)[-1]["cwd"], gateway["project"])
+    # a failed check of input whose delivery is unknown names that directory too
+    other = "proc_000000000002"
+    pre(registered, tool="process_manage", call_id="w1", action="write", data="echo x", session_id=other)
+    post_hook(
+        registered,
+        tool_name="process_manage",
+        args={"action": "write", "data": "echo x", "session_id": other},
+        result=json.dumps({"status": "error", "error": "flush failed"}),
+        tool_call_id="w1",
+    )
+    directive = pre(registered, tool="process_manage", call_id="s2", action="submit", data="", session_id=other)
+    assert directive["rule_key"].startswith("tirith:error:unconfirmed:")
+    assert f"(in {_shown(gateway['project'])}" in directive["message"]
+
+
 # --- Hermes Desktop terminal-approval batching ------------------------------------------------------
 
 

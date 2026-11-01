@@ -72,11 +72,12 @@ def hermes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
     fake = make_fake(str(tmp_path / "bin"), {"rules": RULES})
 
-    def configure(settings=None, approvals_mode=None):
+    def configure(settings=None, approvals_mode=None, **plugins_config):
         config = {
             "plugins": {
                 "enabled": ["tirith"],
                 "entries": {"tirith": {"settings": {"path": fake, "timeout": 25, **(settings or {})}}},
+                **plugins_config,
             }
         }
         if approvals_mode is not None:
@@ -175,6 +176,29 @@ def test_a_crashing_plugin_still_blocks(hermes, monkeypatch):
     message = _gate(plugins, "git status", "x1")
     assert message is not None  # a non-None message means Hermes refuses the call
     assert "raised" in message or "BLOCKED" in message
+
+
+@pytest.mark.parametrize("isolation", ["in_process", "host"])
+def test_checks_run_in_the_session_directory_hermes_reports(hermes, tmp_path, monkeypatch, isolation):
+    # From Hermes 0.22.3 hooks run in the gateway process, whose own directory and TERMINAL_CWD are not the
+    # session's; Hermes keeps the session's directory per turn and reports it through ctx.session_cwd().
+    plugins, configure, fake, _home = hermes
+    if not callable(getattr(plugins.PluginContext, "session_cwd", None)):
+        pytest.skip("this Hermes has no ctx.session_cwd() (added in Hermes 0.22.3)")
+    runtime_cwd = pytest.importorskip("agent.runtime_cwd")
+    project, gateway_root, gateway_terminal = (tmp_path / n for n in ("project", "install-root", "terminal-cwd"))
+    for path in (project, gateway_root, gateway_terminal):
+        path.mkdir()
+    monkeypatch.chdir(gateway_root)
+    monkeypatch.setenv("TERMINAL_CWD", str(gateway_terminal))
+    manager = configure(isolation=isolation)
+    assert manager._plugins["tirith"].enabled, manager._plugins["tirith"].error
+    token = runtime_cwd.set_session_cwd(str(project))  # what Hermes does for the turn of a session
+    try:
+        assert _gate(plugins, "git status", "cwd-1") is None
+    finally:
+        runtime_cwd.reset_session_cwd(token)
+    assert os.path.samefile(scans(fake)[-1]["cwd"], project)
 
 
 def test_requires_hermes_floor_is_enforced(hermes):
