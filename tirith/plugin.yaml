@@ -33,7 +33,7 @@ config_schema:
   offline:
     type: bool
     default: false
-    description: "Run checks with TIRITH_OFFLINE=1: no network from tirith during checks; package and URL intelligence from the local cache only."
+    description: "Run checks with TIRITH_OFFLINE=1: no network from tirith during checks; package and URL intelligence from the local cache only. Needs a threat database tirith has already downloaded (run tirith threat-db update once while online): without one, known-malicious and typosquatted packages are not detected."
   fail_closed:
     type: bool
     default: true

@@ -129,7 +129,7 @@ settings. They are read on every command, so changes apply at once.
 |---|---|---|
 | `path` | `""` | Empty: look for tirith on `PATH`, then in the usual install folders (Homebrew, `~/.local/bin`, `~/.cargo/bin`, Nix, npm, Scoop, `%LOCALAPPDATA%\tirith\bin`). Or an absolute path. |
 | `timeout` | `10` | Seconds per check, 1-60; 12 or less is advised. A check is also stopped 5 s before `plugins.hook_callback_timeout` (30 s by default), and the first one shares that time with the startup commands; above 12 s, or above what fits that limit, a warning is logged. |
-| `offline` | `false` | Run checks with `TIRITH_OFFLINE=1` (see Disclosure). |
+| `offline` | `false` | Run checks with `TIRITH_OFFLINE=1`: no network from tirith during checks. Needs a threat database tirith has already downloaded (run `tirith threat-db update` once while online); see Disclosure. |
 | `fail_closed` | `true` | When tirith cannot give an answer, ask (and block in unattended runs). Off: the command runs unchecked and a warning is logged. |
 | `block_action` | `approve` | tirith blocks: `approve` asks you, `block` refuses. |
 | `critical_action` | `block` | A CRITICAL finding: `block` refuses, `approve` asks you. |
@@ -251,11 +251,23 @@ requests itself, sends no telemetry, and never installs or updates tirith or any
 
 **What tirith does when the plugin runs it** (the same as in your shell): it records each check in its
 local audit log (tagged `hermes`). Unless `offline: true`, it may refresh its signed threat database in
-the background and look up package and URL reputation with OSV.dev, deps.dev, ecosyste.ms, and Google Safe
-Browsing (only if you configured a key), plus any feeds, a running tirith daemon, policy webhooks or a team
-policy server you set up. `offline: true` sets `TIRITH_OFFLINE=1` (the plugin sets it only then):
-checks use only the cached threat database, and lookups that need the network are reported as
-incomplete. Policy webhooks you configured still fire.
+the background and look up package reputation with OSV.dev, deps.dev and ecosyste.ms. When OSV.dev
+reports advisories for a package, tirith also downloads CISA's Known Exploited Vulnerabilities (KEV)
+feed, the whole catalogue, so no package names are sent; it is cached for 24 hours. URL reputation is
+looked up with Google Safe Browsing only if you configured a key. Add any feeds, a running tirith daemon,
+policy webhooks or a team policy server you set up. During a check these lookups get a short time budget
+(500 ms, shared by the packages in the command); a running tirith daemon (`tirith daemon start`) gives
+them 5 s, and if it does not answer in that time tirith checks the command again locally, so with a
+daemon keep `timeout` well above 5 s (the default 10 s is). On a fresh install the first checks can run
+before tirith has finished downloading its threat database in the background; until then, the
+detection that needs it (known-malicious and typosquatted packages, known-bad hosts) is not available.
+
+`offline: true` sets `TIRITH_OFFLINE=1` (the plugin sets it only then): tirith makes no network requests
+during checks and does not refresh its database in the background. Checks use only the threat database
+tirith has already downloaded and its cached lookups, and lookups that need the network are reported as
+incomplete. Without a downloaded database, known-malicious-package and typosquat detection is
+unavailable and only incomplete-lookup warnings appear, so run `tirith threat-db update` once while
+online (it downloads and verifies the signed database). Policy webhooks you configured still fire.
 
 **Licences.** This plugin is MIT. tirith itself is AGPL-3.0 or commercial; the plugin only runs it as a
 separate program and grants no rights to tirith.

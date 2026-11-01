@@ -86,6 +86,13 @@ Fixes from the review of 0.1.0. Needs tirith 0.5.0 or later and Hermes 0.21.5 or
   resolved path, and the contract check does not prove it is tirith, so hardened setups should point
   `path` at a binary the agent cannot write. Another plugin's tool-execution middleware can replace a
   command after the check without the plugin noticing.
+- README, Disclosure: during a check tirith also downloads CISA's Known Exploited Vulnerabilities feed
+  when OSV.dev reports advisories for a package (the whole catalogue, so no package names are sent;
+  cached for 24 hours). Package lookups get 500 ms per check, 5 s with a running tirith daemon, which
+  matters for the `timeout` setting. On a fresh install the first checks can run before tirith's threat
+  database has downloaded. `offline: true` needs a database tirith has already downloaded: without one,
+  known-malicious-package and typosquat detection is unavailable, so run `tirith threat-db update` once
+  while online (also in the setting's description in `plugin.yaml`).
 
 ## 0.1.0
 
