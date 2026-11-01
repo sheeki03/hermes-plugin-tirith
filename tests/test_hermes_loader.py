@@ -1,7 +1,8 @@
 """Load the plugin through a real Hermes and run Hermes's own approval gate.
 
 Needs an installed hermes-agent (``hermes_cli`` importable), for example
-``uv pip install -p .venv -e <hermes-agent checkout>``. Uses the fake tirith, so no real
+``uv pip install -p <this repository>/.venv -e .`` run in a hermes-agent checkout (Hermes 0.22.3
+and later resolve only with the ``[tool.uv]`` settings there). Uses the fake tirith, so no real
 tirith is needed. Everything runs in a temporary HERMES_HOME.
 """
 
