@@ -9,7 +9,8 @@ Ordinary warnings run with an advisory; critical blocks are refused by default.
 ## Requirements
 
 - tirith **0.5.0 or later**, installed by you. The plugin never downloads, installs or updates tirith.
-- Hermes **0.21.5 or later** (tested with the releases 0.21.5, 0.21.6, 0.21.7, 0.22.0, 0.22.1 and 0.22.2).
+- Hermes **0.21.5 or later** (tested with the releases 0.21.5, 0.21.6, 0.21.7, 0.22.0, 0.22.1, 0.22.2 and
+  0.22.5).
 - Linux, macOS or Windows. Python standard library only; nothing to `pip install`.
 
 ## Install

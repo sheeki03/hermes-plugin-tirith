@@ -4,7 +4,8 @@
 
 Released: TODO(owner): the date 0.1.1 is published (after tirith 0.5.0 is published).
 
-Fixes from the review of 0.1.0. Needs tirith 0.5.0 or later and Hermes 0.21.5 or later, like 0.1.0.
+Fixes from the review of 0.1.0. Needs tirith 0.5.0 or later and Hermes 0.21.5 or later, like 0.1.0; also
+tested with Hermes 0.22.5.
 
 - Background terminal input is read the way an interactive bash reads it. A command left open by an
   unclosed `$(`, `<(`, `(`, `{`, `${`, `$[` or `[[`, a quote inside `"$(...)"`, a heredoc with any
