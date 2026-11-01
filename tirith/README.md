@@ -106,7 +106,8 @@ of the typed text: what was confirmed, then the uncertain calls in the order the
 still checks that guess; if it refuses, the input is refused, and its findings are listed in the prompt.
 Approving covers only that process and that text. With `fail_closed: false` the check of the best guess
 is all that happens: its result is used like any other check (a block asks, a CRITICAL finding is
-refused, a warning is attached), and if that check fails too, the input runs.
+refused, a warning is attached), and if that check fails too, the input runs, unless tirith signalled
+that it needs approval (exit code 3 without a usable verdict), which asks as it does for a command.
 
 Tracking is bounded (1024 processes with unfinished input, 4096 unfinished calls). When it is full,
 input that would need a new entry fails closed for that call only; nothing tracked is evicted, and

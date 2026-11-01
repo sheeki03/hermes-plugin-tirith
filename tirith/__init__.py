@@ -326,15 +326,18 @@ def _fail_closed_after_check(
     """Something the check depends on is unknown (``error``), but the text was checked as well.
 
     A refusal stands; otherwise this is a failed check whose prompt lists the findings. With
-    ``fail_closed`` off, the check is all there is.
+    ``fail_closed`` off, the check is all there is, and a check that tirith marked as needing
+    approval (exit code 3 without a usable verdict) still asks.
     """
     findings: tuple[_scan.Finding, ...] = ()
+    requires_approval = False
     if checked is not None:
         decision, outcome = checked
         if decision.action == "block" or (not settings.fail_closed and outcome.kind != "error"):
             return decision, outcome
         findings = outcome.findings
-    failed = _scan.error_outcome(*error, findings=findings)
+        requires_approval = outcome.requires_approval or outcome.kind == "warn_ack"
+    failed = _scan.error_outcome(*error, findings=findings, requires_approval=requires_approval)
     cwd = _scan.resolve_cwd(args, _CWD_BY_TASK.get(task_id), session_cwd=session_cwd)
     decision = _decide.decide(
         failed, settings, command=command, cwd=cwd, session_id=session_id, task_id=task_id, scope=scope

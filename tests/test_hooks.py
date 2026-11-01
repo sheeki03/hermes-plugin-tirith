@@ -988,6 +988,22 @@ def test_overlapping_input_with_fail_open_is_checked_on_the_text_it_has(ctx_fact
     assert scans(fake)[-1]["stdin"] == ATTACK.encode()
 
 
+def test_unconfirmed_input_asks_with_fail_open_when_tirith_needs_approval_without_a_verdict(tmp_path, ctx_factory):
+    # Exit code 3 without a usable verdict asks even with fail_closed off, for a terminal command and for
+    # input to a process whose delivery is unknown alike.
+    fake = make_fake(str(tmp_path / "bin"), {"rules": [{"contains": "needs-ack", "rc": 3, "stdout": "garbage\n"}]})
+    _ctx, registered = ctx_factory(path=fake, fail_closed=False)
+    assert pre(registered, "echo needs-ack", call_id="t1")["rule_key"].startswith("tirith:error:no_verdict:")
+    flush_failed = json.dumps({"status": "error", "error": "flush failed"})
+    assert send(registered, "write", "echo x", "w1", result=flush_failed) is None
+    directive = send(registered, "submit", "; echo needs-ack", "s1", approve=False)
+    assert directive["action"] == "approve" and directive["rule_key"].startswith("tirith:error:unconfirmed:")
+    assert "tirith also signalled that this command needs approval" in directive["message"]
+    assert scans(fake)[-1]["stdin"] == b"echo x; echo needs-ack"
+    # other input still runs: fail_closed is off
+    assert send(registered, "submit", "echo fine", "s2", sid="proc_eeeeeeeeeeee") is None
+
+
 def test_unconfirmed_input_is_shown_checked_and_keyed_to_its_process(hooks, fake):
     _ctx, registered = hooks
     timed_out = "worker timed out"  # not a result Hermes writes for a delivered input

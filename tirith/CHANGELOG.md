@@ -65,6 +65,10 @@ Fixes from the review of 0.1.0. Needs tirith 0.5.0 or later and Hermes 0.21.5 or
   is not loaded, while Hermes still enforces the limit on the call; there the plugin reads
   `plugins.hook_callback_timeout` from Hermes's configuration and clamps it as Hermes does (a negative
   or invalid value is 30 s, 0 is no limit, more than 600 s is 600 s) instead of assuming 30 s.
+- With `fail_closed: false`, input to a background process whose delivery is not known (overlapping
+  calls, a write error) ran when tirith exited with code 3 without a usable verdict, because the failed
+  check built for it dropped tirith's approval signal. It now asks, as a terminal command does in that
+  case; the prompt says that tirith signalled that the input needs approval.
 - The `timeout` setting warns above 12 s (it warned above 25 s), and also when it does not fit the hook
   limit Hermes is configured with.
 - tirith 0.5.0 reports `package_lookup_incomplete` (MEDIUM) when its live package lookups cannot finish:
