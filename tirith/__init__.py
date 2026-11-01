@@ -92,9 +92,10 @@ def _reset_for_tests() -> None:
 def _configured_hook_limit() -> float:
     """``plugins.hook_callback_timeout`` from Hermes's config, read and clamped as Hermes does.
 
-    For a plugin host process (``plugins.isolation: host``): Hermes's package runs there but its plugin
-    manager does not, while the Hermes process that started it enforces this setting. Hermes's config
-    module is imported only when Hermes's package is already loaded; otherwise Hermes's default.
+    For a plugin host process (``plugins.isolation: host``), where Hermes's package runs but its plugin
+    manager need not be loaded (it is not on 0.22.5), while the Hermes process that started the host
+    enforces this setting. Hermes's config module is imported only when Hermes's package is already
+    loaded; otherwise Hermes's default.
     """
     if "hermes_cli" not in sys.modules:
         return HOOK_LIMIT_DEFAULT

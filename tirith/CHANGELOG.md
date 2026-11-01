@@ -63,9 +63,10 @@ tested with Hermes 0.22.5.
   5 s, so calls queued behind a broken binary get the answer at once; one that only ran out of the hook
   call's time is not kept, and the next call gives the binary its full time again. With
   `plugins.isolation: host` the plugin runs in a separate host process, where Hermes's plugin manager
-  is not loaded, while Hermes still enforces the limit on the call; there the plugin reads
-  `plugins.hook_callback_timeout` from Hermes's configuration and clamps it as Hermes does (a negative
-  or invalid value is 30 s, 0 is no limit, more than 600 s is 600 s) instead of assuming 30 s.
+  need not be loaded (on 0.22.5 it is not), while Hermes still enforces the limit on the call; there
+  the plugin reads `plugins.hook_callback_timeout` from Hermes's configuration and clamps it as Hermes
+  does (a negative or invalid value is 30 s, 0 is no limit, more than 600 s is 600 s) instead of
+  assuming 30 s.
 - With `fail_closed: false`, input to a background process whose delivery is not known (overlapping
   calls, a write error) ran when tirith exited with code 3 without a usable verdict, because the failed
   check built for it dropped tirith's approval signal. It now asks, as a terminal command does in that
