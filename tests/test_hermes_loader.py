@@ -204,19 +204,22 @@ def test_checks_run_in_the_session_directory_hermes_reports(hermes, tmp_path, mo
 
 
 def test_a_plugin_host_keeps_to_the_hook_time_limit_hermes_enforces(hermes, tmp_path):
-    # Under plugins.isolation: host the plugin runs in a child process without Hermes's plugin manager, while
-    # the Hermes process enforces plugins.hook_callback_timeout. The plugin must stop its check before that
-    # limit and ask (its own reason), not overrun it (Hermes's timeout block, then 60 s without the plugin).
+    # With plugins.isolation: host the plugin runs in a separate host process (on 0.22.5 one where Hermes's
+    # plugin manager is not loaded), while the Hermes process enforces plugins.hook_callback_timeout. The
+    # plugin must stop its check before that limit and ask with its own reason, not overrun it (Hermes's
+    # timeout block, then 60 s without the plugin).
     plugins, configure, _fake, _home = hermes
     slow = make_fake(
         str(tmp_path / "slow"), {"rules": [{"contains": "slow", "rc": 0, "verdict": verdict("allow"), "sleep": 60}]}
     )
-    configure({"path": slow}, isolation="host", hook_callback_timeout=8)
+    # 20 s leaves the startup check (three runs of the fake, slow on a loaded machine) room within the limit
+    configure({"path": slow}, isolation="host", hook_callback_timeout=20)
+    assert _gate(plugins, "ls", "warm-up") is None  # starts the host and passes the startup check
     started = time.monotonic()
     message = _gate(plugins, "echo slow", "limit-1")
     elapsed = time.monotonic() - started
     assert message and "hook time limit" in message, message
-    assert elapsed < 8, elapsed
+    assert elapsed < 20, elapsed
 
 
 def test_requires_hermes_floor_is_enforced(hermes):
