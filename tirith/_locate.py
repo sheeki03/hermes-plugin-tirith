@@ -168,7 +168,7 @@ def _too_old(path: str, version: str, detail: str) -> GateResult:
         version=version,
         reason=(
             f"tirith {shown} at {path} is older than {MIN_TIRITH_TEXT}: {detail}; this plugin needs tirith "
-            f"{MIN_TIRITH_TEXT} or newer. Upgrade tirith (for example: brew upgrade tirith)"
+            f"{MIN_TIRITH_TEXT} or newer. Upgrade tirith with the package manager you installed it with"
         ),
     )
 

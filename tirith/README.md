@@ -17,8 +17,17 @@ Ordinary warnings run with an advisory; critical blocks are refused by default.
 1. Install tirith 0.5.0 or later (this plugin never downloads or updates it):
 
    ```
-   brew install tirith      # or: npm install -g tirith / cargo install tirith / scoop install tirith
+   brew install tirith                    # or: npm install -g tirith / cargo install tirith
    tirith --version
+   ```
+
+   Homebrew's main repository can take some hours to pick up a new tirith release; until
+   `brew info tirith` shows it, `brew install sheeki03/tap/tirith` installs it from the tap that
+   tirith's release updates. Scoop needs tirith's own bucket (tirith is in neither Main nor Extras):
+
+   ```
+   scoop bucket add tirith https://github.com/sheeki03/scoop-tirith
+   scoop install tirith
    ```
 
    The signed release installers are listed at <https://github.com/sheeki03/tirith#install>.

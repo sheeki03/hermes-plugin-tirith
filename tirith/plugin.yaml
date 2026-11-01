@@ -17,7 +17,7 @@ provides_hooks:
   - transform_tool_result
 external_dependencies:
   - name: tirith
-    install: "brew install tirith  (0.5.0 or later; other installers: https://github.com/sheeki03/tirith#install)"
+    install: "brew install tirith  (0.5.0 or later; or brew install sheeki03/tap/tirith, which tirith's release updates first; Scoop: scoop bucket add tirith https://github.com/sheeki03/scoop-tirith, then scoop install tirith; other installers: https://github.com/sheeki03/tirith#install)"
     check: "tirith --version"
 # Defaults must equal _settings.DEFAULTS (tests/test_manifest.py checks this).
 config_schema:

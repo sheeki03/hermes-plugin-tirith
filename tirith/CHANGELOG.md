@@ -93,6 +93,11 @@ Fixes from the review of 0.1.0. Needs tirith 0.5.0 or later and Hermes 0.21.5 or
   database has downloaded. `offline: true` needs a database tirith has already downloaded: without one,
   known-malicious-package and typosquat detection is unavailable, so run `tirith threat-db update` once
   while online (also in the setting's description in `plugin.yaml`).
+- Install instructions (README and `plugin.yaml`): Scoop needs tirith's bucket first
+  (`scoop bucket add tirith https://github.com/sheeki03/scoop-tirith`), and while Homebrew's main
+  repository has not picked up a new tirith release yet, `brew install sheeki03/tap/tirith` installs it
+  from the tap tirith's release updates. The "older than 0.5.0" message no longer suggests
+  `brew upgrade tirith` to everyone: it says to upgrade with the package manager tirith came from.
 
 ## 0.1.0
 

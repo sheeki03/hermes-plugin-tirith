@@ -14,7 +14,7 @@ settings, unattended runs, limits and the network and data disclosure. Short ver
 
 ```
 # 1. install tirith 0.5.0 or later yourself (the plugin never downloads it)
-brew install tirith
+brew install tirith    # Homebrew core can lag a release by hours: brew install sheeki03/tap/tirith
 # 2. install and enable the plugin (from the Hermes plugin catalog: hermes plugins install tirith)
 hermes plugins install sheeki03/hermes-plugin-tirith/tirith
 hermes plugins enable tirith
