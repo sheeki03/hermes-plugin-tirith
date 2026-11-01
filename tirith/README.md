@@ -191,11 +191,13 @@ From 0.22.3 the CLI, TUI and Desktop are clients of Hermes's gateway, and the pl
 gateway process, not in the program you started. The plugin asks Hermes for each session's directory
 (see Limits). Two more things follow:
 
-- The plugin builds tirith's environment from the gateway's environment, so `TIRITH_*` variables and a
-  `PATH` set in the shell you start Hermes from no longer reach tirith or the plugin's search for the
-  binary. Configure tirith through its own config and policy files, and set the plugin's `path` if
-  tirith is not in one of the usual install folders (those are searched by absolute path whatever
-  `PATH` says). A `TIRITH=0` never reaches tirith either way: the plugin removes it.
+- The plugin builds tirith's environment from the gateway's environment. That is the environment the
+  gateway was started with (by a Hermes service, by Desktop, or by the `hermes` command that found no
+  gateway running), and it stays fixed until that gateway exits: `TIRITH_*` variables and a `PATH` set
+  in the shell of a later session do not reach tirith or the plugin's search for the binary. Configure
+  tirith through its own config and policy files, and set the plugin's `path` if tirith is not in one
+  of the usual install folders (those are searched by absolute path whatever `PATH` says). A
+  `TIRITH=0` never reaches tirith either way: the plugin removes it.
 - The plugin's log lines are in the gateway's logs, and a warning logged once is logged once per
   gateway run, not once per session.
 
