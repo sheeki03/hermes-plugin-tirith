@@ -2,7 +2,7 @@
 
 ## 0.1.1
 
-Released: 2026-11-02
+Released: 2026-11-03
 
 Fixes from the review of 0.1.0. Needs tirith 0.5.0 or later and Hermes 0.21.5 or later, like 0.1.0; also
 tested with Hermes 0.22.5.
