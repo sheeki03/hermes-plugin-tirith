@@ -163,9 +163,12 @@ def _split(text: str, nested: list[str]) -> list[list[_Word]]:
             index = size if end < 0 else end
         elif char == "\\" and text.startswith("\n", index + 1):
             index += 2
-        elif char in "<>" and text.startswith("(", index + 1):  # <( and >(: a command of its own
+        elif char in "<>" and text.startswith("(", index + 1):  # <( and >( process substitutions
             index = _expansion(text, index, nested)
-            commands[-1].append(_Word("", text[index - 1 : index], dynamic=True))
+            if target:
+                target = False
+            else:
+                commands[-1].append(_Word("", text[index - 1 : index], dynamic=True))
         elif char in "<>" or (char == "&" and text.startswith(">", index + 1)):
             end = index + 1
             while end < size and text[end] in "<>&|":

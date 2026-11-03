@@ -32,9 +32,10 @@ tested with Hermes 0.22.5.
 - Hermes Desktop batches: the plugin now finds each command's command word the way bash does. An
   earlier, not yet run command spelled `\cd`, `'cd'`, `"cd"`, `c\d`, `$'cd'` or `$'\x63d'`, run through
   `eval`, `command [-p]`, `builtin` or `time -p`, or written after `NAME=value` assignments or
-  redirections (`>/dev/null cd`, `cd>/dev/null`), now counts as a possible directory change, like `cd`
-  and `builtin cd` already did, so the later command asks instead of being checked silently under the
-  old directory's policy. `echo 'a|cd'`, `echo "; cd x"` and `command -v cd` do not count.
+  redirections (`>/dev/null cd`, `cd>/dev/null`, `< <(:) cd`, `> >(:) cd`), now counts as a possible
+  directory change, like `cd` and `builtin cd` already did, so the later command asks instead of being
+  checked silently under the old directory's policy. `echo 'a|cd'`, `echo "; cd x"` and `command -v cd`
+  do not count.
 - On Hermes 0.22.3 and later, commands are checked in the session's directory. Since 0.22.3 the
   CLI, TUI and Desktop are clients of Hermes's gateway and plugin hooks run in the gateway process,
   whose own directory is not the session's, and the session's `TERMINAL_CWD` is kept per turn, not in
