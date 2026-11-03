@@ -1,6 +1,122 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.1
+
+Released: 2026-11-03
+
+Fixes from the review of 0.1.0. Needs tirith 0.5.0 or later and Hermes 0.21.5 or later, like 0.1.0; also
+tested with Hermes 0.22.5.
+
+- Background terminal input is read the way an interactive bash reads it. A command left open by an
+  unclosed `$(`, `<(`, `(`, `{`, `${`, `$[` or `[[`, a quote inside `"$(...)"`, a heredoc with any
+  delimiter, or an unfinished `if`, `case`, loop or function definition (also after `time -p` or
+  `coproc`) is kept together. After a person approved an opening line such as `bash -c $(` or
+  `eval $(time -p case x in x)`, the lines that complete it used to be checked one at a time (each
+  harmless on its own) while the shell ran them as one command; each is now checked together with the
+  lines before it. This narrows the gap rather than closing it: README Limits lists what remains.
+- Input for a program that is not a shell (a Python or Node REPL, `cat > file`) is still checked line
+  by line, as in 0.1.0, except that the line after one tirith cannot analyse (a Node template literal
+  with `${}`) is checked together with it and so asks too (see below). A line bash rejects as a syntax
+  error (`print(x)`, a stray `done`) ends the command, as bash drops it, and a command held open only by
+  reserved words (`if x:`) or by a heredoc whose delimiter does not start with a letter (`x << 4`) is
+  followed for at most 32 lines (64 KiB). Each new line costs only its own reading, not the whole held
+  text again, also in a long heredoc body or a long word of `{` or `[` (a minified JSON line).
+- Ctrl-C or Ctrl-D on its own clears what was typed once it runs; it used to stay in the text, so every
+  later line failed as input with control keys. It asks where 0.1.0 asked (an open quote, heredoc,
+  final `\` or trailing `|`, or text typed on the line) and goes through otherwise.
+- When tirith reports `analysis_incomplete` for a background line that runs, the next line is checked
+  together with it, in case the shell still reads the two as one command for a reason the plugin misses
+  (bash 5.3's `${ command; }`, which README Limits lists). That next line then usually asks as well,
+  after any line tirith cannot analyse (`source <(...)`, `eval "$X"`, or a Node template literal
+  `` `${a}-${b}` `` typed into a REPL).
+- Hermes Desktop batches: the plugin now finds each command's command word the way bash does. An
+  earlier, not yet run command spelled `\cd`, `'cd'`, `"cd"`, `c\d`, `$'cd'` or `$'\x63d'`, run through
+  `eval`, `command [-p]`, `builtin` or `time -p`, or written after `NAME=value` assignments or
+  redirections (`>/dev/null cd`, `cd>/dev/null`, `< <(:) cd`, `> >(:) cd`), now counts as a possible
+  directory change, like `cd` and `builtin cd` already did, so the later command asks instead of being
+  checked silently under the old directory's policy. `echo 'a|cd'`, `echo "; cd x"` and `command -v cd`
+  do not count.
+- On Hermes 0.22.3 and later, commands are checked in the session's directory. Since 0.22.3 the
+  CLI, TUI and Desktop are clients of Hermes's gateway and plugin hooks run in the gateway process,
+  whose own directory is not the session's, and the session's `TERMINAL_CWD` is kept per turn, not in
+  the process environment. A command without `workdir` that followed no `cd` was checked in the
+  gateway's directory or the gateway's `TERMINAL_CWD`: a project's `.tirith/policy.yaml` (its blocklist
+  among others) did not apply, relative paths and the repository root were looked up in the wrong
+  tree, the prompt named the wrong directory, and a warning approved "Always" with
+  `warn_action: approve` in one project was approved in every other. The plugin now asks Hermes for
+  the session's directory (`ctx.session_cwd()`) after the call's `workdir` and the task's last `cd`,
+  before `TERMINAL_CWD`; Hermes 0.22.2 and earlier, which have no such call, work as before.
+- The directory a task moved to is kept while the task is in use. It was dropped once 512 other tasks
+  had reported a directory change, even if the task was still running commands, which were then checked
+  in `TERMINAL_CWD` or Hermes's own directory under the wrong repository policy. Each check now counts as
+  a use (least recently used goes first) and up to 4096 tasks are remembered.
+- The Hermes Desktop batch prompt for a command whose directory is not known yet no longer says "tirith
+  could not check this command" (tirith did check it). It says that an earlier command that can change
+  directory has not run yet, and shows tirith's verdict in the directory known so far (nothing found, a
+  warning, a required policy approval or a finding). A warning stays attached to the result once
+  approved. A failed check asks with its own reason, and a refusal still stands.
+- Each hook call now finishes inside Hermes's `plugins.hook_callback_timeout` (read from Hermes; 30 s by
+  default). A slow or hung binary on the first call (startup check plus check, up to about 27 s at the
+  default timeout and 42 s at 25 s) could run past it; Hermes then blocked the call and skipped the
+  plugin for 60 s, which blocked every tool. The startup check of every candidate binary and the check
+  now share one deadline 5 s before the limit, including the time spent waiting for another call's
+  startup check; a check stopped there asks, like any failed check. A failed startup check is kept for
+  5 s, so calls queued behind a broken binary get the answer at once; one that only ran out of the hook
+  call's time is not kept, and the next call gives the binary its full time again. With
+  `plugins.isolation: host` the plugin runs in a separate host process, where Hermes's plugin manager
+  need not be loaded (on 0.22.5 it is not), while Hermes still enforces the limit on the call; there
+  the plugin reads `plugins.hook_callback_timeout` from Hermes's configuration and clamps it as Hermes
+  does (a negative or invalid value is 30 s, 0 is no limit, more than 600 s is 600 s) instead of
+  assuming 30 s.
+- With `fail_closed: false`, input to a background process whose delivery is not known (overlapping
+  calls, a write error) ran when tirith exited with code 3 without a usable verdict, because the failed
+  check built for it dropped tirith's approval signal. It now asks, as a terminal command does in that
+  case; the prompt says that tirith signalled that the input needs approval.
+- The `timeout` setting warns above 12 s (it warned above 25 s), and also when it does not fit the hook
+  limit Hermes is configured with.
+- tirith 0.5.0 reports `package_lookup_incomplete` (MEDIUM) when its live package lookups (OSV.dev,
+  deps.dev, ecosyste.ms, the CISA KEV feed) do not all finish and nothing is cached: online usually
+  because tirith's short lookup time budget during a check ran out (500 ms per check, shared by the
+  packages in it) or a service returned an error, and always in tirith's offline mode (`offline: true`,
+  with which the plugin sets `TIRITH_OFFLINE=1`, or a `TIRITH_OFFLINE` tirith inherits). That made many
+  a `pip install`, `npm install`, `npx`, `cargo add` or `go get` append the same warning to its result.
+  With `warn_action: allow`, the first one in a session is now appended with a note on what it means
+  (incomplete verification, not evidence about the package, and not a sign that the machine is offline
+  unless tirith's offline mode is on), and later ones in that session are left out; every other
+  finding is still appended, and with `warn_action: approve` or `block` it still asks or refuses each
+  time.
+- README, Limits: commands tirith allows can switch the guard off (uninstall or replace the binary,
+  `hermes plugins disable tirith`, `hermes config set ...`); the plugin runs whichever program is at the
+  resolved path, and the contract check does not prove it is tirith, so hardened setups should point
+  `path` at a binary the agent cannot write. Another plugin's tool-execution middleware can replace a
+  command after the check without the plugin noticing.
+- README, Disclosure: during a check tirith also downloads CISA's Known Exploited Vulnerabilities feed
+  when OSV.dev reports advisories for a package (the whole catalogue, so no package names are sent;
+  cached for 24 hours). Package lookups get 500 ms per check, 5 s with a running tirith daemon, which
+  matters for the `timeout` setting. On a fresh install the first checks can run before tirith's threat
+  database has downloaded. `offline: true` needs a database tirith has already downloaded: without one,
+  known-malicious-package and typosquat detection is unavailable, so run `tirith threat-db update` once
+  while online (also in the setting's description in `plugin.yaml`).
+- Install instructions (README and `plugin.yaml`): Scoop needs tirith's bucket first
+  (`scoop bucket add tirith https://github.com/sheeki03/scoop-tirith`), and while Homebrew's main
+  repository has not picked up a new tirith release yet, `brew install sheeki03/tap/tirith` installs it
+  from the tap tirith's release updates. The "older than 0.5.0" message no longer suggests
+  `brew upgrade tirith` to everyone: it says to upgrade with the package manager tirith came from.
+- README: `hermes -z` (a one-shot unattended turn) approves every "ask" like `--yolo`, but never a
+  refusal. A prompt for an honoured `TIRITH=0` bypass lists no findings, because tirith does not
+  analyse a bypassed command, not even one it would refuse as CRITICAL. tirith's `approval_rules`
+  `timeout_secs` and `fallback` are not used; Hermes's approval settings decide.
+- README, Hermes 0.22.3 and later: the hooks run in the gateway process, so tirith gets the gateway's
+  environment (`TIRITH_*` variables and `PATH` come from the environment the gateway was started with,
+  not from the shell of each session; use tirith's config and policy files and the plugin's `path`),
+  and the gateway process writes the plugin's log lines (to `agent.log` and `gateway.log`, warnings
+  also to `errors.log`), so a warning is logged once per gateway run. README, Logs: with
+  `plugins.isolation: host` only warnings are kept, copied into `agent.log` as `plugin host [...]`
+  lines.
+
+## 0.1.0
+
+Released: 2026-11-02
 
 First release. Needs tirith 0.5.0 or later and Hermes 0.21.5 or later; tested with the Hermes releases
 0.21.5, 0.21.6, 0.21.7, 0.22.0, 0.22.1 and 0.22.2 (on 0.21.5, turn off Hermes's own built-in tirith

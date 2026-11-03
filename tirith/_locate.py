@@ -35,9 +35,13 @@ PROBE_FLAG = "--hermes-plugin-capability-probe"
 USAGE_ERROR_RC = 2  # clap's exit code for a usage error
 CONTRACT_COMMAND = b"echo tirith-hermes-plugin-contract-check\n"
 NEGATIVE_TTL = 60.0
+# A failed gate (no usable answer) is kept this long, so callers queued behind a slow or broken binary
+# get the answer at once instead of running the gate again one after another.
+ERROR_TTL = 5.0
 VERSION_TIMEOUT = 5.0
 PROBE_TIMEOUT = 10.0
-# First call: the gate (--version, probe, contract check) plus the scan must fit Hermes's 30 s hook budget.
+# The gate's steps (--version, probe, contract check) share this budget, and like the scan after them
+# they also end by the hook call's deadline (Hermes's plugins.hook_callback_timeout, 30 s by default).
 GATE_BUDGET = 15.0
 
 _VERSION_RE = re.compile(r"tirith\s+v?(\d+)\.(\d+)\.(\d+)")
@@ -164,34 +168,72 @@ def _too_old(path: str, version: str, detail: str) -> GateResult:
         version=version,
         reason=(
             f"tirith {shown} at {path} is older than {MIN_TIRITH_TEXT}: {detail}; this plugin needs tirith "
-            f"{MIN_TIRITH_TEXT} or newer. Upgrade tirith (for example: brew upgrade tirith)"
+            f"{MIN_TIRITH_TEXT} or newer. Upgrade tirith with the package manager you installed it with"
         ),
     )
 
 
-def gate(path: str, env: Mapping[str, str], timeout: float, runner: Runner | None = None) -> GateResult:
-    """Run ``--version``, the capability probe and the contract check against one binary."""
+def _no_time(path: str, version: str = "", *, started: bool = False) -> GateResult:
+    """The gate ran out of the hook call's time (not kept: the binary may answer given its full time)."""
+    detail = "it did not answer before" if started else "no time was left within"
+    return GateResult(
+        "timeout",
+        path=path,
+        version=version,
+        reason=(
+            f"tirith at {path} could not be checked: {detail} Hermes's hook time limit (plugins.hook_callback_timeout)"
+        ),
+    )
+
+
+def gate(
+    path: str,
+    env: Mapping[str, str],
+    timeout: float,
+    runner: Runner | None = None,
+    deadline: float | None = None,
+) -> GateResult:
+    """Run ``--version``, the capability probe and the contract check against one binary.
+
+    The steps share ``GATE_BUDGET`` and all end by ``deadline`` (``time.monotonic()``, the end of the
+    hook call's time), whichever comes first. With no time left for a step, or when a step that the
+    deadline cut short times out: status ``timeout``, which the Locator does not keep.
+    """
     run = runner or _scan.run
     if not _executable(path):
         return GateResult("not_found", path=path, reason=f"tirith was not found at {path}")
     cwd = tempfile.gettempdir()
-    deadline = time.monotonic() + GATE_BUDGET
+    gate_deadline = time.monotonic() + GATE_BUDGET
 
-    def budget(limit: float) -> float:
-        return max(0.1, min(limit, timeout, deadline - time.monotonic()))
+    cut = [False]  # the last step's timeout was shortened by the deadline
 
-    version_run = run([path, "--version"], b"", cwd, env, budget(VERSION_TIMEOUT))
+    def step(argv: list[str], stdin: bytes, limit: float) -> _scan.RunResult | None:
+        own = max(0.1, min(limit, timeout, gate_deadline - time.monotonic()))
+        allowed = _scan.time_left(deadline, own)
+        cut[0] = allowed is not None and allowed < own
+        return None if allowed is None else run(argv, stdin, cwd, env, allowed)
+
+    def timed_out(version: str, reason: str) -> GateResult:
+        if cut[0]:
+            return _no_time(path, version, started=True)
+        return GateResult("error", path=path, version=version, reason=reason)
+
+    version_run = step([path, "--version"], b"", VERSION_TIMEOUT)
+    if version_run is None:
+        return _no_time(path)
     if version_run.error:
         return GateResult("error", path=path, reason=f"tirith at {path} could not be started")
     if version_run.timed_out:
-        return GateResult("error", path=path, reason=f"tirith at {path} did not answer --version in time")
+        return timed_out("", f"tirith at {path} did not answer --version in time")
     parsed, version = _parse_version(version_run.stdout.decode("utf-8", errors="replace"))
 
-    probe = run([path, *_scan.CHECK_ARGV, PROBE_FLAG], b"true\n", cwd, env, budget(PROBE_TIMEOUT))
+    probe = step([path, *_scan.CHECK_ARGV, PROBE_FLAG], b"true\n", PROBE_TIMEOUT)
+    if probe is None:
+        return _no_time(path, version)
     if probe.error:
         return GateResult("error", path=path, version=version, reason=f"tirith at {path} could not be started")
     if probe.timed_out:
-        return GateResult("error", path=path, version=version, reason=f"tirith at {path} did not answer in time")
+        return timed_out(version, f"tirith at {path} did not answer in time")
     swallowed = probe.rc == 0 or _scan.parse_verdict(probe.stdout.decode("utf-8", errors="replace")) is not None
     if swallowed:
         return _too_old(path, version, "it can mis-read a check request and miss attacks")
@@ -208,11 +250,13 @@ def gate(path: str, env: Mapping[str, str], timeout: float, runner: Runner | Non
         )
 
     # A real check, as slow as a scan: it may use what is left of the gate's budget.
-    contract = run([path, *_scan.CHECK_ARGV], CONTRACT_COMMAND, cwd, env, budget(timeout))
+    contract = step([path, *_scan.CHECK_ARGV], CONTRACT_COMMAND, timeout)
+    if contract is None:
+        return _no_time(path, version)
     if contract.error:
         return GateResult("error", path=path, version=version, reason=f"tirith at {path} could not be started")
     if contract.timed_out:
-        return GateResult("error", path=path, version=version, reason=f"tirith at {path} did not answer in time")
+        return timed_out(version, f"tirith at {path} did not answer in time")
     verdict = _scan.parse_verdict(contract.stdout.decode("utf-8", errors="replace"))
     if verdict is None:
         return GateResult(
@@ -230,7 +274,11 @@ def gate(path: str, env: Mapping[str, str], timeout: float, runner: Runner | Non
 
 
 class Locator:
-    """Finds and gates tirith, caching results per binary (by size and mtime)."""
+    """Finds and gates tirith, caching results per binary (by size and mtime).
+
+    A pass is kept until the binary changes, a refusal (too old) for ``NEGATIVE_TTL`` and a failed
+    gate (no usable answer) for ``ERROR_TTL``. A gate that ran out of the hook call's time is not kept.
+    """
 
     def __init__(self, clock: Callable[[], float] = time.monotonic, runner: Runner | None = None):
         self._clock = clock
@@ -263,29 +311,43 @@ class Locator:
         c_size, c_mtime, stamp, result = entry
         if (c_size, c_mtime) != (size, mtime):
             return None
-        if not result.ok and self._clock() - stamp > NEGATIVE_TTL:
+        if not result.ok and self._clock() - stamp > (ERROR_TTL if result.status == "error" else NEGATIVE_TTL):
             return None
         return GateResult(result.status, path=path, version=result.version, reason=result.reason)
 
-    def check(self, path: str, env: Mapping[str, str], timeout: float) -> GateResult:
+    def check(self, path: str, env: Mapping[str, str], timeout: float, deadline: float | None = None) -> GateResult:
         cached = self._cached(path)
         if cached is not None:
             return cached
-        with self._gate_lock:
+        if deadline is None:
+            acquired = self._gate_lock.acquire()
+        else:  # another call is running the gate: wait for its answer only while time is left
+            wait = deadline - time.monotonic() - _scan.KILL_GRACE - _scan.MIN_RUN
+            acquired = self._gate_lock.acquire(timeout=max(0.0, wait))
+        if not acquired:
+            return _no_time(path)
+        try:
             cached = self._cached(path)
             if cached is not None:
                 return cached
             before = self._stat(path)
-            result = gate(path, env, timeout, runner=self._runner)
+            result = gate(path, env, timeout, runner=self._runner, deadline=deadline)
             after = self._stat(path)
-            if result.status in ("ok", "too_old") and before is not None and before == after:
+            if result.status in ("ok", "too_old", "error") and before is not None and before == after:
                 real, size, mtime = before
                 with self._lock:
                     self._cache[real] = (size, mtime, self._clock(), result)
             return result
+        finally:
+            self._gate_lock.release()
 
-    def resolve(self, path_setting: str, env: Mapping[str, str], timeout: float) -> GateResult:
-        """The first candidate that passes the gate, else the first candidate's failure."""
+    def resolve(
+        self, path_setting: str, env: Mapping[str, str], timeout: float, deadline: float | None = None
+    ) -> GateResult:
+        """The first candidate that passes the gate, else the first candidate's failure.
+
+        All candidates share ``deadline``: one slow binary leaves less time for the next.
+        """
         paths = candidates(path_setting, env)
         if not paths and path_setting:
             return GateResult(
@@ -305,7 +367,7 @@ class Locator:
             )
         first: GateResult | None = None
         for path in paths:
-            result = self.check(path, env, timeout)
+            result = self.check(path, env, timeout, deadline)
             if result.ok:
                 return result
             if first is None:

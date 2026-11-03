@@ -15,7 +15,7 @@ TYPES = {"str": str, "int": int, "bool": bool, "list": list}
 
 def test_manifest_basics():
     assert MANIFEST["name"] == "tirith"
-    assert MANIFEST["version"] == plugin.__version__ == "0.1.0"
+    assert MANIFEST["version"] == plugin.__version__ == "0.1.1"
     assert MANIFEST["requires_hermes"] == ">=0.21.5"
     assert MANIFEST["license"] == "MIT"
     assert MANIFEST["author"] == "tirith contributors"
@@ -60,6 +60,7 @@ def test_licence_is_shipped_with_the_plugin():
 def test_installed_tree_has_only_runtime_files():
     allowed = {
         "__init__.py",
+        "_cd.py",
         "_decide.py",
         "_input.py",
         "_locate.py",

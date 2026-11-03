@@ -13,12 +13,12 @@ import json
 import logging
 import math
 import os
-import re
 import sys
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from typing import Any
 
-from . import _decide, _input, _locate, _scan, _settings, _state
+from . import _cd, _decide, _input, _locate, _scan, _settings, _state
 from ._version import PLUGIN_VERSION
 
 __version__ = PLUGIN_VERSION
@@ -29,16 +29,45 @@ TERMINAL_TOOLS = frozenset({"terminal"})
 PROCESS_TOOLS = frozenset({"process_manage", "process"})
 WATCHED_TOOLS = TERMINAL_TOOLS | PROCESS_TOOLS
 
+# Hermes stops waiting for a pre_tool_call callback after plugins.hook_callback_timeout (30 s by default),
+# blocks the call, and then skips this callback for 60 s, which blocks every tool. Each hook call
+# therefore finishes its gate and check HOOK_MARGIN seconds (at most half the limit) before that limit;
+# a check stopped there asks for approval like any failed check.
+HOOK_LIMIT_DEFAULT = 30.0
+HOOK_LIMIT_MAX = 600.0  # Hermes clamps plugins.hook_callback_timeout to this
+HOOK_MARGIN = 5.0
+INCOMPLETE_RULE = "analysis_incomplete"  # tirith could not analyse part of the command
+
 _LOCATOR = _locate.Locator()
 # task id -> cwd reported by the last terminal result. No age limit: Hermes reports the cwd only when a
 # command changes it and keeps its own record for the whole session, so this must not expire either.
-_CWD_BY_TASK = _state.BoundedStore(ttl=math.inf)
+# Every check of a task reads its entry, which keeps it (LRU): only the task idle longest is dropped
+# when more than CWD_TASKS tasks have changed directory.
+CWD_TASKS = 4096
+_CWD_BY_TASK = _state.BoundedStore(max_entries=CWD_TASKS, ttl=math.inf, refresh_on_get=True)
 _SCANNED = _state.BoundedStore()  # scoped hook identity -> checked command/data
-_WARN_CONTEXT = _state.BoundedStore()  # scoped hook identity -> warning context
+_WARN_CONTEXT = _state.BoundedStore()  # scoped hook identity -> (warning context, session, session notes)
+# (session, rule id) -> True once that session's agent was shown the note for a _decide.SESSION_NOTE_RULES
+# warning. Dropping an entry (more than 4096 sessions) only shows the note once more.
+_SESSION_NOTES = _state.BoundedStore(max_entries=4096, ttl=math.inf, refresh_on_get=True)
 _PROCESS_INPUT = _input.ProcessInput()  # background process -> input typed but not run yet
 _PENDING_TERMINAL = _state.BoundedStore()  # scoped hook identity -> (task id, command) from pre to post
 _FAIL_OPEN_LIMIT = _state.RateLimiter(60.0)
 _TIMEOUT_LIMIT = _state.RateLimiter(60.0)
+
+
+def _session_cwd(ctx: Any) -> Any:
+    """The calling session's directory as Hermes reports it (``ctx.session_cwd()``), or None.
+
+    From Hermes 0.22.3 the CLI, TUI and Desktop are clients of the gateway, and plugin hooks run in
+    the gateway process: its own cwd is not the session's, and the session's ``TERMINAL_CWD`` is kept
+    per turn, outside ``os.environ``. Hermes 0.22.2 and earlier have no such method. Never raises.
+    """
+    try:
+        method = getattr(ctx, "session_cwd", None)
+        return method() if callable(method) else None
+    except Exception:
+        return None
 
 
 def register(ctx: Any) -> None:
@@ -52,11 +81,63 @@ def _reset_for_tests() -> None:
     _CWD_BY_TASK.clear()
     _SCANNED.clear()
     _WARN_CONTEXT.clear()
+    _SESSION_NOTES.clear()
     _PROCESS_INPUT.clear()
     _PENDING_TERMINAL.clear()
     _FAIL_OPEN_LIMIT.clear()
     _TIMEOUT_LIMIT.clear()
     _settings._reset_warnings_for_tests()
+
+
+def _configured_hook_limit() -> float:
+    """``plugins.hook_callback_timeout`` from Hermes's config, read and clamped as Hermes does.
+
+    For a plugin host process (``plugins.isolation: host``), where Hermes's package runs but its plugin
+    manager need not be loaded (it is not on 0.22.5), while the Hermes process that started the host
+    enforces this setting. Hermes's config module is imported only when Hermes's package is already
+    loaded; otherwise Hermes's default.
+    """
+    if "hermes_cli" not in sys.modules:
+        return HOOK_LIMIT_DEFAULT
+    plugins = (importlib.import_module("hermes_cli.config").load_config_readonly() or {}).get("plugins")
+    if not isinstance(plugins, Mapping) or plugins.get("hook_callback_timeout") is None:
+        return HOOK_LIMIT_DEFAULT
+    limit = float(plugins["hook_callback_timeout"])
+    if limit < 0:
+        return HOOK_LIMIT_DEFAULT
+    return min(limit, HOOK_LIMIT_MAX)
+
+
+def _hook_limit() -> float:
+    """Hermes's ``plugins.hook_callback_timeout`` in seconds (``inf`` when Hermes sets none).
+
+    Read through Hermes's own resolver when Hermes has loaded it, else from Hermes's config in a
+    plugin host process (``_configured_hook_limit``); nothing is imported outside Hermes. Otherwise,
+    or if that fails, Hermes's default.
+    """
+    resolve = getattr(sys.modules.get("hermes_cli.plugins"), "_resolve_hook_callback_timeout", None)
+    try:
+        limit = float(resolve()) if callable(resolve) else _configured_hook_limit()
+    except Exception:
+        return HOOK_LIMIT_DEFAULT
+    if math.isnan(limit):
+        return HOOK_LIMIT_DEFAULT
+    return limit if limit > 0 else math.inf  # 0 or less: Hermes runs the callback without a time limit
+
+
+def _hook_budget(limit: float) -> float:
+    """How long one hook call may spend on the gate and the check."""
+    return limit - min(HOOK_MARGIN, limit / 2)
+
+
+def _warn_timeout_budget(timeout: int, limit: float) -> None:
+    longest = _hook_budget(limit) - _scan.KILL_GRACE
+    if timeout > longest:
+        _settings.warn_once(
+            f"tirith plugin: timeout={timeout} s does not fit Hermes's hook time limit "
+            f"(plugins.hook_callback_timeout={limit:g} s): checks are stopped after about {max(longest, 0):.0f} s "
+            "and then ask for approval"
+        )
 
 
 def terminal_command(args: Any) -> str | None:
@@ -67,12 +148,15 @@ def terminal_command(args: Any) -> str | None:
     return command if isinstance(command, str) and command.strip() else None
 
 
-# A command word that can move the shell to another directory: cd, pushd, popd, or a sourced script.
-# A function or alias that changes directory under another name is not recognised (README, Limits).
-_DIRECTORY_CHANGE = re.compile(
-    r"(?:^|[;&|(){}`!\n]|\b(?:then|do|else|elif|if|while|until|time)\s)"
-    r"\s*(?:(?:builtin|command)\s+)?(?:cd|pushd|popd|source|\.)(?=$|[\s;&|)`])"
-)
+@functools.lru_cache(maxsize=256)
+def _moves_directory(command: str) -> bool:
+    """Whether ``command`` may change the shell's directory (a heuristic; see ``_cd``).
+
+    Hermes Desktop checks every pending earlier command again for each later one: cached.
+    """
+    return _cd.moves_directory(command)
+
+
 _CWD_PENDING = (
     "cwd_pending",
     "an earlier terminal command that can change directory has not run yet, so the directory this "
@@ -94,7 +178,40 @@ def _directory_in_doubt(args: Any, task_id: str) -> bool:
     """
     if _absolute_workdir(args):
         return False
-    return any(task == task_id and _DIRECTORY_CHANGE.search(command) for task, command in _PENDING_TERMINAL.values())
+    return any(task == task_id and _moves_directory(command) for task, command in _PENDING_TERMINAL.values())
+
+
+def _ask_while_directory_unknown(
+    decision: _decide.Decision,
+    outcome: _scan.ScanOutcome,
+    settings: _settings.Settings,
+    *,
+    command: str,
+    cwd: str,
+    task_id: str,
+    session_id: str,
+) -> tuple[_decide.Decision, _scan.ScanOutcome]:
+    """tirith checked the command in ``cwd``, but an earlier batched command may change directory first.
+
+    A refusal stands, and a failed check already asks with its own reason. Otherwise ask, showing
+    tirith's verdict in ``cwd``. With ``fail_closed`` off, the check is all there is.
+    """
+    if decision.action == "block" or outcome.kind == "error" or not settings.fail_closed:
+        return decision, outcome
+    pending = _scan.error_outcome(
+        *_CWD_PENDING,
+        findings=outcome.findings,
+        notes=outcome.notes,
+        deferred=outcome.deferred,
+        rc=outcome.rc,
+        binary=outcome.binary,
+        version=outcome.version,
+        duration_ms=outcome.duration_ms,
+    )
+    asked = _decide.cwd_pending(
+        outcome, decision, settings, command=command, cwd=cwd, session_id=session_id, task_id=task_id
+    )
+    return asked, pending
 
 
 def _double_scan_check() -> None:
@@ -128,7 +245,7 @@ def _log_decision(decision: _decide.Decision, outcome: _scan.ScanOutcome, comman
     if outcome.kind == "error":
         if outcome.reason_class == "timeout":
             if _TIMEOUT_LIMIT.allow("timeout"):
-                logger.warning("tirith plugin: tirith did not answer within the timeout setting")
+                logger.warning("tirith plugin: %s", outcome.reason)
         elif outcome.reason_class in ("not_found", "too_old", "spawn"):
             _settings.warn_once(f"tirith plugin: {outcome.reason}")
         if decision.action == "none" and _FAIL_OPEN_LIMIT.allow("fail-open"):
@@ -163,19 +280,35 @@ def check_command(
     args: Mapping[str, Any] | None,
     task_id: str,
     session_id: str,
+    deadline: float | None = None,
+    session_cwd: Callable[[], Any] | None = None,
 ) -> tuple[_decide.Decision, _scan.ScanOutcome, str]:
-    cwd = _scan.resolve_cwd(args, _CWD_BY_TASK.get(task_id))
+    """Locate and gate tirith, then check ``command``; both end by ``deadline`` (``time.monotonic()``).
+
+    ``session_cwd`` asks Hermes for the session's directory (see ``_scan.resolve_cwd``).
+    """
+    cwd = _scan.resolve_cwd(args, _CWD_BY_TASK.get(task_id), session_cwd=session_cwd)
     env = _scan.child_env(settings, session_id=session_id, task_id=task_id)
-    located = _LOCATOR.resolve(settings.path, env, settings.timeout)
+    located = _LOCATOR.resolve(settings.path, env, settings.timeout, deadline)
     if not located.ok:
         outcome = _scan.error_outcome(located.status, located.reason, binary=located.path, version=located.version)
     else:
         if located.reason:
             _settings.warn_once(f"tirith plugin: using tirith {located.version} at {located.path}: {located.reason}")
         outcome = _scan.scan(
-            command, binary=located.path, version=located.version, cwd=cwd, env=env, timeout=settings.timeout
+            command,
+            binary=located.path,
+            version=located.version,
+            cwd=cwd,
+            env=env,
+            timeout=settings.timeout,
+            deadline=deadline,
         )
-    decision = _decide.decide(outcome, settings, command=command, cwd=cwd, session_id=session_id, task_id=task_id)
+    scope = session_id or task_id
+    noted = frozenset(rule for rule in _decide.SESSION_NOTE_RULES if _SESSION_NOTES.get((scope, rule)))
+    decision = _decide.decide(
+        outcome, settings, command=command, cwd=cwd, session_id=session_id, task_id=task_id, noted=noted
+    )
     return decision, outcome, cwd
 
 
@@ -189,20 +322,24 @@ def _fail_closed_after_check(
     task_id: str,
     session_id: str,
     scope: str = "",
+    session_cwd: Callable[[], Any] | None = None,
 ) -> tuple[_decide.Decision, _scan.ScanOutcome]:
     """Something the check depends on is unknown (``error``), but the text was checked as well.
 
     A refusal stands; otherwise this is a failed check whose prompt lists the findings. With
-    ``fail_closed`` off, the check is all there is.
+    ``fail_closed`` off, the check is all there is, and a check that tirith marked as needing
+    approval (exit code 3 without a usable verdict) still asks.
     """
     findings: tuple[_scan.Finding, ...] = ()
+    requires_approval = False
     if checked is not None:
         decision, outcome = checked
         if decision.action == "block" or (not settings.fail_closed and outcome.kind != "error"):
             return decision, outcome
         findings = outcome.findings
-    failed = _scan.error_outcome(*error, findings=findings)
-    cwd = _scan.resolve_cwd(args, _CWD_BY_TASK.get(task_id))
+        requires_approval = outcome.requires_approval or outcome.kind == "warn_ack"
+    failed = _scan.error_outcome(*error, findings=findings, requires_approval=requires_approval)
+    cwd = _scan.resolve_cwd(args, _CWD_BY_TASK.get(task_id), session_cwd=session_cwd)
     decision = _decide.decide(
         failed, settings, command=command, cwd=cwd, session_id=session_id, task_id=task_id, scope=scope
     )
@@ -216,6 +353,8 @@ def check_process_input(
     args: Mapping[str, Any],
     task_id: str,
     session_id: str,
+    deadline: float | None = None,
+    session_cwd: Callable[[], Any] | None = None,
 ) -> tuple[_decide.Decision, _scan.ScanOutcome, str]:
     """Check what a ``process_manage`` write/submit/close completes (``plan.scan``), or fail closed.
 
@@ -223,14 +362,15 @@ def check_process_input(
     a refusal stands, and its findings join the failed-check prompt, whose approval key is tied to
     this process and this text. With ``fail_closed`` off, that check is all there is.
     """
+    ids = {"args": args, "task_id": task_id, "session_id": session_id, "deadline": deadline, "session_cwd": session_cwd}
     if plan.error is None:
         if plan.scan is None:
             return _decide.Decision("none", "allow"), _scan.ScanOutcome(kind="allow"), plan.text  # nothing runs yet
-        decision, outcome, _cwd = check_command(plan.scan, settings, args=args, task_id=task_id, session_id=session_id)
+        decision, outcome, _cwd = check_command(plan.scan, settings, **ids)
         return decision, outcome, plan.scan
     checked = None
     if plan.scan is not None:
-        decision, outcome, _cwd = check_command(plan.scan, settings, args=args, task_id=task_id, session_id=session_id)
+        decision, outcome, _cwd = check_command(plan.scan, settings, **ids)
         checked = (decision, outcome)
     decision, outcome = _fail_closed_after_check(
         checked,
@@ -241,14 +381,22 @@ def check_process_input(
         task_id=task_id,
         session_id=session_id,
         scope=plan.process,
+        session_cwd=session_cwd,
     )
     return decision, outcome, plan.scan if outcome.kind != "error" and plan.scan is not None else plan.text
 
 
-def _track_process_input(plan: _input.Plan, input_call_id: object, directive: dict | None) -> None:
-    """Finish the pre reservation; an early terminal post must not be overwritten by it."""
+def _track_process_input(
+    plan: _input.Plan, input_call_id: object, directive: dict | None, outcome: _scan.ScanOutcome | None = None
+) -> None:
+    """Finish the pre reservation; an early terminal post must not be overwritten by it.
+
+    When tirith could not analyse the text (``analysis_incomplete``) and the call runs, the next line
+    of that process is checked together with it.
+    """
     permitted = directive is None or directive.get("action") != "block"
-    _PROCESS_INPUT.started(input_call_id, plan.process, plan.keys, permitted=permitted)
+    incomplete = outcome is not None and any(f.rule_id == INCOMPLETE_RULE for f in outcome.findings)
+    _PROCESS_INPUT.started(input_call_id, plan.process, plan.keys, permitted=permitted, incomplete=incomplete)
 
 
 def _internal_error(command: str, settings: _settings.Settings, task_id: str, session_id: str) -> dict | None:
@@ -280,6 +428,7 @@ def _on_pre_tool_call(
 ) -> dict | None:
     if tool_name not in WATCHED_TOOLS:
         return None
+    started = time.monotonic()
     settings = _settings.Settings()  # defaults (fail closed) until the user's settings are read
     command = ""
     plan: _input.Plan | None = None
@@ -314,32 +463,33 @@ def _on_pre_tool_call(
             plan = _PROCESS_INPUT.plan(plan.process, found, eof=_input.ends_input(args), call_id=input_call_id) or plan
             command = plan.text
         _double_scan_check()
+        limit = _hook_limit()
+        _warn_timeout_budget(settings.timeout, limit)
+        budget = _hook_budget(limit)
+        deadline = None if math.isinf(budget) else started + budget
+        ids = {
+            "args": args,
+            "task_id": task_id,
+            "session_id": session_id,
+            "deadline": deadline,
+            "session_cwd": functools.partial(_session_cwd, ctx),
+        }
         if plan is None:
-            decision, outcome, _cwd = check_command(
-                command, settings, args=args, task_id=task_id, session_id=session_id
-            )
+            decision, outcome, cwd = check_command(command, settings, **ids)
             if in_doubt:
-                decision, outcome = _fail_closed_after_check(
-                    (decision, outcome),
-                    _CWD_PENDING,
-                    settings,
-                    command=command,
-                    args=args,
-                    task_id=task_id,
-                    session_id=session_id,
+                decision, outcome = _ask_while_directory_unknown(
+                    decision, outcome, settings, command=command, cwd=cwd, task_id=task_id, session_id=session_id
                 )
         else:
-            decision, outcome, command = check_process_input(
-                plan, settings, args=args, task_id=task_id, session_id=session_id
-            )
+            decision, outcome, command = check_process_input(plan, settings, **ids)
         if call_id:
             _SCANNED.set(call_id, checked)
             if decision.context:
-                _WARN_CONTEXT.set(call_id, decision.context)
+                _WARN_CONTEXT.set(call_id, (decision.context, session_id or task_id, decision.notes))
         _log_decision(decision, outcome, command)
         directive = decision.directive()
         if plan is not None:
-            _track_process_input(plan, input_call_id, directive)
+            _track_process_input(plan, input_call_id, directive, outcome)
         return directive
     except Exception:
         logger.exception("tirith plugin: internal error while checking a %s call", tool_name)
@@ -423,8 +573,11 @@ def _on_transform_tool_result(
     if tool_name not in WATCHED_TOOLS or call_id is None:
         return None
     try:
-        context = _WARN_CONTEXT.pop(call_id)
-        if context and isinstance(result, str):
+        entry = _WARN_CONTEXT.pop(call_id)
+        if entry and isinstance(result, str):
+            context, scope, notes = entry
+            for rule in notes:  # the agent has now seen the explanation; later repeats are left out
+                _SESSION_NOTES.set((scope, rule), True)
             return result + context
     except Exception:
         logger.debug("tirith plugin: transform_tool_result failed", exc_info=True)

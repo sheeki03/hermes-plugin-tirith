@@ -1,7 +1,8 @@
 """Load the plugin through a real Hermes and run Hermes's own approval gate.
 
 Needs an installed hermes-agent (``hermes_cli`` importable), for example
-``uv pip install -p .venv -e <hermes-agent checkout>``. Uses the fake tirith, so no real
+``uv pip install -p <this repository>/.venv -e .`` run in a hermes-agent checkout (Hermes 0.22.3
+and later resolve only with the ``[tool.uv]`` settings there). Uses the fake tirith, so no real
 tirith is needed. Everything runs in a temporary HERMES_HOME.
 """
 
@@ -13,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 import yaml
@@ -72,11 +74,12 @@ def hermes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
     fake = make_fake(str(tmp_path / "bin"), {"rules": RULES})
 
-    def configure(settings=None, approvals_mode=None):
+    def configure(settings=None, approvals_mode=None, **plugins_config):
         config = {
             "plugins": {
                 "enabled": ["tirith"],
                 "entries": {"tirith": {"settings": {"path": fake, "timeout": 25, **(settings or {})}}},
+                **plugins_config,
             }
         }
         if approvals_mode is not None:
@@ -102,7 +105,7 @@ def test_plugin_loads_with_declared_hooks(hermes):
     loaded = manager._plugins["tirith"]
     assert loaded.enabled is True, loaded.error
     assert loaded.error is None
-    assert loaded.manifest.version == "0.1.0"
+    assert loaded.manifest.version == "0.1.1"
     manifest = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8"))
     assert sorted(loaded.hooks_registered) == sorted(manifest["provides_hooks"])
 
@@ -175,6 +178,48 @@ def test_a_crashing_plugin_still_blocks(hermes, monkeypatch):
     message = _gate(plugins, "git status", "x1")
     assert message is not None  # a non-None message means Hermes refuses the call
     assert "raised" in message or "BLOCKED" in message
+
+
+@pytest.mark.parametrize("isolation", ["in_process", "host"])
+def test_checks_run_in_the_session_directory_hermes_reports(hermes, tmp_path, monkeypatch, isolation):
+    # From Hermes 0.22.3 hooks run in the gateway process, whose own directory and TERMINAL_CWD are not the
+    # session's; Hermes keeps the session's directory per turn and reports it through ctx.session_cwd().
+    plugins, configure, fake, _home = hermes
+    if not callable(getattr(plugins.PluginContext, "session_cwd", None)):
+        pytest.skip("this Hermes has no ctx.session_cwd() (added in Hermes 0.22.3)")
+    runtime_cwd = pytest.importorskip("agent.runtime_cwd")
+    project, gateway_root, gateway_terminal = (tmp_path / n for n in ("project", "install-root", "terminal-cwd"))
+    for path in (project, gateway_root, gateway_terminal):
+        path.mkdir()
+    monkeypatch.chdir(gateway_root)
+    monkeypatch.setenv("TERMINAL_CWD", str(gateway_terminal))
+    manager = configure(isolation=isolation)
+    assert manager._plugins["tirith"].enabled, manager._plugins["tirith"].error
+    token = runtime_cwd.set_session_cwd(str(project))  # what Hermes does for the turn of a session
+    try:
+        assert _gate(plugins, "git status", "cwd-1") is None
+    finally:
+        runtime_cwd.reset_session_cwd(token)
+    assert os.path.samefile(scans(fake)[-1]["cwd"], project)
+
+
+def test_a_plugin_host_keeps_to_the_hook_time_limit_hermes_enforces(hermes, tmp_path):
+    # With plugins.isolation: host the plugin runs in a separate host process (on 0.22.5 one where Hermes's
+    # plugin manager is not loaded), while the Hermes process enforces plugins.hook_callback_timeout. The
+    # plugin must stop its check before that limit and ask with its own reason, not overrun it (Hermes's
+    # timeout block, then 60 s without the plugin).
+    plugins, configure, _fake, _home = hermes
+    slow = make_fake(
+        str(tmp_path / "slow"), {"rules": [{"contains": "slow", "rc": 0, "verdict": verdict("allow"), "sleep": 60}]}
+    )
+    # 20 s leaves the startup check (three runs of the fake, slow on a loaded machine) room within the limit
+    configure({"path": slow}, isolation="host", hook_callback_timeout=20)
+    assert _gate(plugins, "ls", "warm-up") is None  # starts the host and passes the startup check
+    started = time.monotonic()
+    message = _gate(plugins, "echo slow", "limit-1")
+    elapsed = time.monotonic() - started
+    assert message and "hook time limit" in message, message
+    assert elapsed < 20, elapsed
 
 
 def test_requires_hermes_floor_is_enforced(hermes):

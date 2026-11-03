@@ -5,8 +5,13 @@ Warning-only attack rows would be permitted with an advisory; they are not preve
 Benign results are reported, not asserted: the benign target is set by the tirith release.
 
 The test runs offline in an empty home, so tirith has no threat database. Rows that tirith can
-only catch with its database are asserted only when TIRITH_CORPUS_DATA_HOME points at an
-XDG data directory that holds one. TIRITH_CORPUS_REPORT=<path> writes the table as Markdown.
+only catch with its database or online intelligence are asserted only when TIRITH_CORPUS_DATA_HOME
+points at an XDG data directory that holds one. package_lookup_incomplete (tirith could not finish
+its live lookups, here because the test runs offline) is not counted as a signal for an attack row.
+TIRITH_CORPUS_REPORT=<path> writes the table as Markdown.
+
+Each row is checked in a Hermes session of its own, so no row's decision depends on the rows before
+it. In one real session a package_lookup_incomplete warning is appended only the first time.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from pathlib import Path
 import pytest
 
 import tirith as plugin
+from tirith import _decide, _settings
 
 pytestmark = [
     pytest.mark.realtirith,
@@ -25,8 +31,11 @@ pytestmark = [
 ]
 
 CORPUS = json.loads((Path(__file__).parent / "data" / "corpus.json").read_text(encoding="utf-8"))
-# Caught through the threat database only (typosquatted package, known exfiltration endpoint).
-NEEDS_THREAT_DB = frozenset({"A06", "A07"})
+# Typosquatted packages (pip "reqeusts", npm "expresss"): caught through the threat database or online
+# intelligence only. Offline without a database tirith reports just package_lookup_incomplete.
+NEEDS_INTELLIGENCE = frozenset({"A06", "X21"})
+# A warning about tirith's own coverage, not about the command: not an attack signal.
+LOOKUP_INCOMPLETE = "package_lookup_incomplete"
 ATTEMPTS = 3  # a row whose check timed out is checked again; one that keeps failing fails the test
 
 
@@ -67,7 +76,7 @@ def test_corpus(ctx_factory, tmp_path, monkeypatch):
     for row in CORPUS:
         for attempt in range(1, ATTEMPTS + 1):
             call_id = f"corpus-{row['id']}-{attempt}"
-            ids = {"task_id": "corpus", "session_id": "corpus", "tool_call_id": call_id}
+            ids = {"task_id": "corpus", "session_id": f"corpus-{row['id']}", "tool_call_id": call_id}
             args = {"command": row["cmd"]}
             directive = registered["pre_tool_call"](tool_name="terminal", args=args, **ids)
             # Hermes follows every call with post_tool_call (status "blocked" if it did not run), then
@@ -81,16 +90,19 @@ def test_corpus(ctx_factory, tmp_path, monkeypatch):
         if attempt > 1:
             retried.append(f"{row['id']} ({attempt} attempts)")
         action = directive["action"] if directive else ("allow+warning" if context else "allow")
+        shown = _decide.filter_findings(outcome.findings, _settings.Settings())
+        if action == "allow+warning" and all(f.rule_id == LOOKUP_INCOMPLETE for f in shown):
+            action = "allow+lookup-incomplete"
         message = (directive or {}).get("message", "") or (context or "")
         coverage = (
             "check failed"
             if outcome.kind == "error"
-            else ("intelligence not asserted" if not data_home and row["id"] in NEEDS_THREAT_DB else "asserted")
+            else ("intelligence not asserted" if not data_home and row["id"] in NEEDS_INTELLIGENCE else "asserted")
         )
         rows.append((row["id"], row["expected"], row["set"], action, coverage, message))
         if outcome.kind == "error":
             errors.append(row["id"])
-        elif row["expected"] == "attack" and action == "allow" and coverage == "asserted":
+        elif row["expected"] == "attack" and action in ("allow", "allow+lookup-incomplete") and coverage == "asserted":
             lost.append(row["id"])
 
     report = os.environ.get("TIRITH_CORPUS_REPORT")
@@ -113,10 +125,11 @@ def test_corpus(ctx_factory, tmp_path, monkeypatch):
             f"Attack decisions: {sum(r[3] == 'block' for r in attacks)} refusals, "
             f"{sum(r[3] == 'approve' for r in attacks)} approval requests, "
             f"{sum(r[3] == 'allow+warning' for r in attacks)} warning-only permissions, "
-            f"{sum(r[3] == 'allow' for r in attacks)} no-signal permissions.",
+            f"{sum(r[3] in ('allow', 'allow+lookup-incomplete') for r in attacks)} no-signal permissions "
+            f"({sum(r[3] == 'allow+lookup-incomplete' for r in attacks)} with only {LOOKUP_INCOMPLETE}).",
             f"Warning-only attack rows (not prevented): {warned or 'none'}.",
             f"Asserted attack rows with no signal: {lost or 'none'}. Failed checks: {errors or 'none'}.",
-            f"Database-dependent rows not asserted: {unasserted or 'none'}.",
+            f"Rows that need the threat database or online intelligence, not asserted: {unasserted or 'none'}.",
             f"Checked again after a timeout: {retried or 'none'}.",
         ]
         Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")

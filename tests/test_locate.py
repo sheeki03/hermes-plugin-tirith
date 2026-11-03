@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
+import time
 import types
 
 import pytest
 
 import tirith as plugin
-from tirith import _locate
+from tirith import _locate, _scan
 from tirith._locate import CONTRACT_COMMAND, PROBE_FLAG, Locator, candidates, gate
 from tirith._scan import CHECK_ARGV, RunResult, child_env
 from tirith._settings import Settings
@@ -148,11 +150,15 @@ def test_approval_field_must_be_a_boolean(tmp_path, env, value):
         {"rc": 101, "stderr": "thread 'main' panicked\n"},
     ],
 )
-def test_contract_check_without_a_verdict_is_an_error_and_not_cached(tmp_path, env, answer):
+def test_contract_check_without_a_verdict_is_an_error_kept_only_briefly(tmp_path, env, answer):
+    now = [1000.0]
     fake = make_fake(str(tmp_path / "odd"), {"contract_response": answer})
-    locator = Locator()
+    locator = Locator(clock=lambda: now[0])
     result = locator.check(fake, env, TEST_TIMEOUT)
     assert result.status == "error" and "contract check" in result.reason
+    assert locator.check(fake, env, TEST_TIMEOUT).status == "error"
+    assert len(calls(fake)) == 3  # a caller right behind gets the failure without running the gate again
+    now[0] += _locate.ERROR_TTL + 0.1
     locator.check(fake, env, TEST_TIMEOUT)
     assert len(calls(fake)) == 6
 
@@ -185,6 +191,120 @@ def test_gate_steps_share_one_time_budget(tmp_path, env, monkeypatch):
     assert sum(seen) <= _locate.GATE_BUDGET + 0.1
 
 
+def _answering_runner(seen, release=None):
+    """A runner that answers like tirith 0.5.0, recording each step's timeout."""
+
+    def runner(argv, stdin, cwd, run_env, timeout):
+        seen.append(timeout)
+        if release is not None:
+            release.wait(30)
+        if argv[1:] == ["--version"]:
+            return RunResult(rc=0, stdout=b"tirith 0.5.0\n")
+        if PROBE_FLAG in argv:
+            return RunResult(rc=2, stderr=f"error: unexpected argument '{PROBE_FLAG}' found".encode())
+        return RunResult(rc=0, stdout=(json.dumps(verdict("allow")) + "\n").encode())
+
+    return runner
+
+
+def test_gate_steps_end_by_the_hook_deadline(tmp_path, env):
+    seen: list[float] = []
+    fake = make_fake(str(tmp_path / "b"))
+    left = 4.0
+    deadline = time.monotonic() + left + _scan.KILL_GRACE
+    assert gate(fake, env, TEST_TIMEOUT, runner=_answering_runner(seen), deadline=deadline).ok
+    assert len(seen) == 3 and all(step <= left + 0.01 for step in seen)  # kill grace kept free
+
+
+def test_gate_with_no_time_left_runs_nothing_and_is_not_kept(tmp_path, env):
+    seen: list[float] = []
+    fake = make_fake(str(tmp_path / "b"))
+    locator = Locator(runner=_answering_runner(seen))
+    result = locator.check(fake, env, TEST_TIMEOUT, deadline=time.monotonic() + _scan.KILL_GRACE)
+    assert result.status == "timeout" and "hook time limit" in result.reason and seen == []
+    assert locator.check(fake, env, TEST_TIMEOUT).ok and len(seen) == 3  # the next call gates afresh
+
+
+def test_a_gate_step_cut_short_by_the_deadline_is_not_kept(tmp_path, env):
+    # The binary did not get its full time, so a timeout says nothing about it: the next call gates again.
+    seen: list[float] = []
+
+    def slow_probe(argv, stdin, cwd, run_env, timeout):
+        seen.append(timeout)
+        if PROBE_FLAG in argv:
+            return RunResult(rc=None, timed_out=True)
+        return _answering_runner([])(argv, stdin, cwd, run_env, timeout)
+
+    fake = make_fake(str(tmp_path / "b"))
+    locator = Locator(runner=slow_probe)
+    deadline = time.monotonic() + _scan.KILL_GRACE + 2.0  # less than the probe's own 10 s timeout
+    result = locator.check(fake, env, TEST_TIMEOUT, deadline=deadline)
+    assert result.status == "timeout" and "did not answer before Hermes's hook time limit" in result.reason
+    assert seen[1] < _locate.PROBE_TIMEOUT
+    assert locator.check(fake, env, TEST_TIMEOUT).status == "error"  # not kept: gated again, full time
+    assert len(seen) == 4 and seen[3] == min(_locate.PROBE_TIMEOUT, TEST_TIMEOUT)
+
+
+def test_a_caller_queued_behind_a_failing_gate_gets_its_answer_at_once(tmp_path, env):
+    release = threading.Event()
+    count: list[float] = []
+
+    def hung(argv, stdin, cwd, run_env, timeout):
+        count.append(timeout)
+        release.wait(30)
+        return RunResult(rc=None, timed_out=True)  # --version did not answer
+
+    fake = make_fake(str(tmp_path / "b"))
+    locator = Locator(runner=hung)
+    results: dict[str, object] = {}
+    first = threading.Thread(target=lambda: results.setdefault("first", locator.check(fake, env, TEST_TIMEOUT)))
+    first.start()
+    while not count:
+        time.sleep(0.01)
+    second = threading.Thread(target=lambda: results.setdefault("second", locator.check(fake, env, TEST_TIMEOUT)))
+    second.start()
+    time.sleep(0.2)
+    release.set()
+    first.join(10)
+    second.join(10)
+    assert results["first"].status == "error" and results["second"].status == "error"
+    assert len(count) == 1  # the queued caller did not run the gate again
+
+
+def test_waiting_for_another_callers_gate_ends_by_the_deadline(tmp_path, env):
+    release = threading.Event()
+    seen: list[float] = []
+    fake = make_fake(str(tmp_path / "b"))
+    locator = Locator(runner=_answering_runner(seen, release=release))
+    first = threading.Thread(target=lambda: locator.check(fake, env, TEST_TIMEOUT))
+    first.start()
+    while not seen:
+        time.sleep(0.01)
+    started = time.monotonic()
+    deadline = started + _scan.KILL_GRACE + _scan.MIN_RUN + 0.3
+    result = locator.check(fake, env, TEST_TIMEOUT, deadline=deadline)
+    waited = time.monotonic() - started
+    release.set()
+    first.join(10)
+    assert result.status == "timeout" and waited < 5.0
+    assert locator.check(fake, env, TEST_TIMEOUT).ok  # the other caller's pass is kept
+
+
+def test_candidates_share_the_hook_deadline(tmp_path, isolated, monkeypatch, env):
+    # The first candidate uses up the time; the next one is not given a fresh budget of its own.
+    slow = make_fake(str(tmp_path / "slow"), {"probe_sleep": 60})
+    monkeypatch.setenv("PATH", str(tmp_path / "slow"))
+    if os.name == "nt":
+        make_fake(str(isolated / "APPDATA" / "npm"))
+    else:
+        make_fake(str(isolated / ".local" / "bin"))
+    started = time.monotonic()
+    deadline = started + _scan.KILL_GRACE + 3.0
+    result = Locator().resolve("", child_env(Settings()), TEST_TIMEOUT, deadline)
+    assert time.monotonic() - started < 3.0 + 2 * _scan.KILL_GRACE + 2.0
+    assert not result.ok and os.path.samefile(result.path, slow)
+
+
 def test_prerelease_build_with_the_new_contract_passes(tmp_path, env):
     fake = make_fake(str(tmp_path / "pre"), {"version_output": "tirith 0.4.2\n"})
     result = gate(fake, env, TEST_TIMEOUT)
@@ -207,21 +327,32 @@ def test_probe_that_exits_zero_is_refused(tmp_path, env):
     ],
 )
 def test_probe_rejection_must_be_a_usage_error_for_the_probe(tmp_path, env, reject):
+    now = [1000.0]
     fake = make_fake(str(tmp_path / "odd"), {"reject_response": reject})
-    locator = Locator()
+    locator = Locator(clock=lambda: now[0])
     result = locator.check(fake, env, TEST_TIMEOUT)
     assert result.status == "error" and "unexpected answer" in result.reason and PROBE_FLAG in result.reason
     locator.check(fake, env, TEST_TIMEOUT)
-    assert len(calls(fake)) == 4  # an unexpected answer is not cached
+    assert len(calls(fake)) == 2  # kept for ERROR_TTL
+    now[0] += _locate.ERROR_TTL + 0.1
+    locator.check(fake, env, TEST_TIMEOUT)
+    assert len(calls(fake)) == 4  # then the gate runs again
 
 
-def test_probe_timeout_is_an_error_and_not_cached(tmp_path, env):
+def test_probe_timeout_is_an_error_kept_only_briefly(tmp_path, env):
+    now = [1000.0]
     fake = make_fake(str(tmp_path / "slow"), {"probe_sleep": 30})
-    locator = Locator()
+    locator = Locator(clock=lambda: now[0])
     result = locator.check(fake, env, 1)
     assert result.status == "error" and "in time" in result.reason
-    make_fake(str(tmp_path / "slow"))  # same path, now fast (new config)
-    assert locator.check(fake, env, TEST_TIMEOUT).ok
+    assert locator.check(fake, env, TEST_TIMEOUT).status == "error"  # not run again right away
+    config = tmp_path / "slow" / "tirith.config.json"  # the launcher itself does not change
+    config.write_text(json.dumps({**json.loads(config.read_text(encoding="utf-8")), "probe_sleep": 0}), "utf-8")
+    calls_before = len(calls(fake))
+    assert locator.check(fake, env, TEST_TIMEOUT).status == "error"
+    assert len(calls(fake)) == calls_before
+    now[0] += _locate.ERROR_TTL + 0.1
+    assert locator.check(fake, env, TEST_TIMEOUT).ok  # same binary, now answering: checked again
 
 
 def test_first_passing_candidate_wins(tmp_path, isolated, monkeypatch, env):

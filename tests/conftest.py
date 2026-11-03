@@ -18,9 +18,10 @@ from tirith import _locate  # noqa: E402
 
 PLUGIN_DIR = ROOT / "tirith"
 # Tests are about decisions, not speed: on a loaded machine a fake or debug tirith can take seconds to
-# start. Tests about timeouts set their own short timeout and a slow fake.
-TEST_TIMEOUT = 25  # the largest timeout the plugin accepts without a warning
+# start. Tests about timeouts set their own short timeout, hook time limit and a slow fake.
+TEST_TIMEOUT = 25  # generous; above the timeout the plugin advises (12 s), which only logs a warning
 TEST_GATE_LIMITS = {"VERSION_TIMEOUT": 60.0, "PROBE_TIMEOUT": 60.0, "GATE_BUDGET": 180.0}
+TEST_HOOK_LIMIT = 600.0  # stands for Hermes's plugins.hook_callback_timeout when Hermes is not loaded
 # Test inputs, not tirith settings: kept when the tests clear TIRITH* variables.
 TEST_INPUTS = frozenset(
     {"TIRITH_TEST_BIN", "TIRITH_OLD_BIN", "TIRITH_NO_APPROVAL_BIN", "TIRITH_CORPUS_REPORT", "TIRITH_CORPUS_DATA_HOME"}
@@ -51,6 +52,7 @@ def _clean_plugin_state(monkeypatch):
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     for name, value in TEST_GATE_LIMITS.items():
         monkeypatch.setattr(_locate, name, value)
+    monkeypatch.setattr(plugin, "HOOK_LIMIT_DEFAULT", TEST_HOOK_LIMIT)
     plugin._reset_for_tests()
     yield
     plugin._reset_for_tests()

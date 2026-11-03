@@ -9,8 +9,8 @@ import signal
 import subprocess
 import tempfile
 import time
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from . import _settings
@@ -25,6 +25,26 @@ CHECK_ARGV = ("check", "--json", "--non-interactive", "--shell", "posix")
 STRIPPED_ENV = frozenset({"TIRITH", "TIRITH_DEFER", "TIRITH_INTERACTIVE"})
 
 IS_WINDOWS = os.name == "nt"
+
+# How long run() can take after its timeout: killing the process tree (taskkill gets 5 s on Windows)
+# and collecting its output (2 s). A deadline must leave this much room after a run's timeout.
+KILL_GRACE = 7.0 if IS_WINDOWS else 2.0
+MIN_RUN = 0.5  # no run is started with less time than this before a deadline
+DEADLINE_REASON = (
+    "tirith did not answer in time: the check was stopped to stay within Hermes's hook time limit "
+    "(plugins.hook_callback_timeout)"
+)
+
+
+def time_left(deadline: float | None, limit: float) -> float | None:
+    """The timeout for a run that must end by ``deadline`` (``time.monotonic()``): at most ``limit``.
+
+    None when too little time is left to start one. ``deadline`` None means no deadline.
+    """
+    if deadline is None:
+        return limit
+    left = deadline - time.monotonic() - KILL_GRACE
+    return min(limit, left) if left >= MIN_RUN else None
 
 
 @dataclass(frozen=True)
@@ -182,21 +202,32 @@ def _process_cwd() -> str:
         return tempfile.gettempdir()
 
 
-def resolve_cwd(args: Mapping[str, Any] | None, tracked_cwd: Any, env: Mapping[str, str] | None = None) -> str:
+def resolve_cwd(
+    args: Mapping[str, Any] | None,
+    tracked_cwd: Any,
+    env: Mapping[str, str] | None = None,
+    session_cwd: Callable[[], Any] | None = None,
+) -> str:
     """The directory tirith runs in, so repo policy and relative paths match the command.
 
-    Order: the call's ``workdir``; the cwd last reported by this task's terminal results;
-    ``TERMINAL_CWD``; the Hermes process cwd. The first existing directory wins.
+    Order: the call's absolute ``workdir``; the cwd last reported by this task's terminal results;
+    the session's directory as Hermes reports it (``session_cwd``, which must not raise and is
+    only called when needed); ``TERMINAL_CWD``; the Hermes process cwd. The first existing
+    directory wins. A relative ``workdir`` is taken relative to the directory found that way.
     """
-    source_env = os.environ if env is None else env
-    base = _usable_dir(tracked_cwd) or _usable_dir(source_env.get("TERMINAL_CWD")) or _process_cwd()
     workdir = (args or {}).get("workdir") if isinstance(args, Mapping) else None
-    if isinstance(workdir, str) and workdir.strip():
-        expanded = os.path.expanduser(workdir.strip())
-        if not os.path.isabs(expanded):
-            expanded = os.path.join(base, expanded)
-        if os.path.isdir(expanded):
-            return expanded
+    wanted = os.path.expanduser(workdir.strip()) if isinstance(workdir, str) else ""
+    if wanted and os.path.isabs(wanted) and os.path.isdir(wanted):
+        return wanted
+    source_env = os.environ if env is None else env
+    base = (
+        _usable_dir(tracked_cwd)
+        or (_usable_dir(session_cwd()) if session_cwd is not None else None)
+        or _usable_dir(source_env.get("TERMINAL_CWD"))
+        or _process_cwd()
+    )
+    if wanted and not os.path.isabs(wanted) and os.path.isdir(os.path.join(base, wanted)):
+        return os.path.join(base, wanted)
     return base
 
 
@@ -311,10 +342,20 @@ def scan(
     cwd: str,
     env: Mapping[str, str],
     timeout: float,
+    deadline: float | None = None,
 ) -> ScanOutcome:
-    """Run ``tirith check`` with the command on stdin (never on the command line)."""
+    """Run ``tirith check`` with the command on stdin (never on the command line).
+
+    The run is cut short to end by ``deadline`` (``time.monotonic()``), the end of the hook call's time.
+    """
     data = encode_command(command)
     if isinstance(data, ScanOutcome):
         return data
-    result = run([binary, *CHECK_ARGV], data, cwd, env, timeout)
-    return classify(result, binary=binary, version=version)
+    budget = time_left(deadline, timeout)
+    if budget is None:
+        return error_outcome("timeout", DEADLINE_REASON, binary=binary, version=version)
+    result = run([binary, *CHECK_ARGV], data, cwd, env, budget)
+    outcome = classify(result, binary=binary, version=version)
+    if result.timed_out and budget < timeout:
+        outcome = replace(outcome, reason=DEADLINE_REASON)
+    return outcome

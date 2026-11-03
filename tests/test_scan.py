@@ -254,6 +254,30 @@ def test_cwd_order(tmp_path, monkeypatch):
     assert resolve_cwd({"workdir": "sub"}, str(tracked), env) == str(tracked / "sub")
 
 
+def test_cwd_order_with_the_session_directory_from_hermes(tmp_path, monkeypatch):
+    work, tracked, session, terminal = (tmp_path / n for n in ("work", "tracked", "session", "terminal"))
+    for d in (work, tracked, session, terminal):
+        d.mkdir()
+    (session / "sub").mkdir()
+    env = {"TERMINAL_CWD": str(terminal)}
+    monkeypatch.chdir(tmp_path)
+    asked = []
+
+    def session_cwd():
+        asked.append(1)
+        return str(session)
+
+    assert resolve_cwd({"workdir": str(work)}, str(tracked), env, session_cwd) == str(work)
+    assert resolve_cwd({"workdir": str(work)}, None, env, session_cwd) == str(work)
+    assert asked == []  # not asked when an absolute workdir decides
+    assert resolve_cwd({}, str(tracked), env, session_cwd) == str(tracked)
+    assert resolve_cwd({}, None, env, session_cwd) == str(session)
+    assert resolve_cwd({"workdir": "sub"}, None, env, session_cwd) == str(session / "sub")
+    assert resolve_cwd({"workdir": str(tmp_path / "gone")}, None, env, session_cwd) == str(session)
+    for answer in ("", None, "sub", str(tmp_path / "gone")):
+        assert resolve_cwd({}, None, env, lambda answer=answer: answer) == str(terminal)
+
+
 def test_cwd_expands_user(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))

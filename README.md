@@ -6,20 +6,16 @@ terminal command, the plugin runs your installed `tirith check`. Blocks and requ
 confirmations go to Hermes's approval prompt; ordinary warnings are attached to results.
 Critical blocks are refused by default.
 
-**Status: 0.1.0, not released yet.** It needs tirith 0.5.0, which is not released yet.
-
-The implementation is on the candidate branch, not the placeholder default branch.
-The commands below are the release installation path, **after** Tirith 0.5.0 and
-the plugin are published; an unpinned GitHub install is not usable yet. Catalog
-listing is a separate maintainer submission, not automatic Hermes migration.
+**Version 0.1.1.** Needs tirith 0.5.0 or later and Hermes 0.21.5 or later; see the
+[changelog](tirith/CHANGELOG.md).
 
 The plugin itself is in [`tirith/`](tirith/); its [README](tirith/README.md) covers what it does,
 settings, unattended runs, limits and the network and data disclosure. Short version:
 
 ```
 # 1. install tirith 0.5.0 or later yourself (the plugin never downloads it)
-brew install tirith
-# 2. install and enable the plugin
+brew install tirith    # Homebrew core can lag a release by hours: brew install sheeki03/tap/tirith
+# 2. install and enable the plugin (from the Hermes plugin catalog: hermes plugins install tirith)
 hermes plugins install sheeki03/hermes-plugin-tirith/tirith
 hermes plugins enable tirith
 # 3. Hermes 0.21.5 only: turn off its built-in tirith check so commands are not checked twice
@@ -51,17 +47,23 @@ Test groups:
 - **`realtirith`**: run only when a tirith binary is provided. `TIRITH_TEST_BIN` is a tirith with the
   0.5.0 check contract (scans, policy, corpus); `TIRITH_OLD_BIN` is an older release that the version gate
   must refuse; `TIRITH_NO_APPROVAL_BIN` is a pre-release build whose verdicts lack `requires_approval`,
-  which the gate must refuse too. `TIRITH_CORPUS_REPORT=<file>` writes the corpus table.
+  which the gate must refuse too (CI does not set it, so its two tests run only locally).
+  `TIRITH_CORPUS_REPORT=<file>` writes the corpus table.
 - **`hermes`**: loads the plugin through a real Hermes (`hermes_cli` importable, for example
-  `uv pip install -p .venv -e <hermes-agent checkout>`), runs Hermes's own approval gate end to end, and
-  runs `hermes plugins validate` and `hermes plugins doctor`.
+  `uv pip install -p <this repository>/.venv -e .` run in a hermes-agent checkout, so that Hermes's own
+  `[tool.uv]` settings apply), runs Hermes's own approval gate end to end, and runs
+  `hermes plugins validate` and `hermes plugins doctor`.
 
 The corpus measures proposed scanner/hook decisions, not shell execution.
 Warning-only permissions are not prevention; checker failures and
 database-dependent rows not asserted without intelligence are reported separately.
-CI runs the Hermes tests on the released Hermes 0.21.5 (the minimum), 0.21.7 and 0.22.2, pinned by
-commit with their tags fetched so Hermes knows its version; 0.21.6, 0.22.0 and 0.22.1 were tested
-locally. Hermes tests do not run on Windows, and none of this certifies a published plugin artifact.
+CI runs the Hermes tests on the released Hermes 0.21.5 (the minimum), 0.21.7, 0.22.2 (the last release
+whose CLI runs plugin hooks in its own process) and 0.22.5 (the latest), pinned by commit with their
+tags fetched so Hermes knows its version, and on Hermes main in a job that may fail without failing the
+run; 0.21.6, 0.22.0 and 0.22.1 were tested locally. From 0.22.3 Hermes installs only with the
+`[tool.uv]` override-dependencies in its `pyproject.toml`, so CI installs those releases with
+`uv pip install -e .` run in the Hermes checkout (plain `pip install -e` fails on Python 3.14).
+Hermes tests do not run on Windows, and none of this certifies a published plugin artifact.
 
 ```
 .venv/bin/python -m pytest -m hermes
